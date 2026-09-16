@@ -8,6 +8,10 @@ const herdr = process.env.HERDR_BIN_PATH ?? "herdr"
 const root = resolve(import.meta.dir, "..")
 const context = JSON.parse(process.env.HERDR_PLUGIN_CONTEXT_JSON ?? "{}")
 const cwd = context.worktree?.checkout_path ?? context.workspace_cwd
+const noPullRequestMessage = "No pull request found for the current branch."
+function errorMessage(error: any): string {
+  return error.stderr?.toString().trim() || error.message || String(error)
+}
 function command(executable: string, args: string[], directory = root): any {
   return JSON.parse(execFileSync(executable, args, {
     cwd: directory, encoding: "utf8", timeout: 45000,
@@ -29,8 +33,14 @@ try {
     process.exitCode = result.status ?? 1
   } else {
     if (!cwd || !context.workspace_id || !context.focused_pane_id) throw new Error("No workspace/pane context")
-    const pr = command("gh", ["pr", "view", "--json", "url"], cwd)
-    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/[1-9]\d*$/.test(pr.url)) throw new Error("No supported PR for this workspace")
+    let pr: any
+    try {
+      pr = command("gh", ["pr", "view", "--json", "url"], cwd)
+    } catch (error) {
+      if (/no pull requests? found/i.test(errorMessage(error))) throw new Error(noPullRequestMessage)
+      throw error
+    }
+    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/[1-9]\d*$/.test(pr.url)) throw new Error(noPullRequestMessage)
     const directory = process.env.HERDR_PLUGIN_STATE_DIR
     if (!directory) throw new Error("Missing plugin state directory")
     mkdirSync(directory, { recursive: true })
@@ -69,10 +79,11 @@ try {
     }
   }
 } catch (error: any) {
-  const message = error.stderr?.toString().trim() || error.message
+  const message = errorMessage(error)
   console.error(`herdr-pr: ${message}`)
   if (process.argv[2] !== "pane") {
-    try { api(["notification", "show", "Pull request", "--body", message]) } catch {}
+    const title = message === noPullRequestMessage ? "Pull request unavailable" : "Pull request"
+    try { api(["notification", "show", title, "--body", message]) } catch {}
   }
   process.exitCode = 1
 }
