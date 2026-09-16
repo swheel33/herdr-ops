@@ -350,8 +350,8 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
     <box paddingX={2} paddingY={1} flexShrink={0} backgroundColor={theme.panel} flexDirection="column">
       <Link url={reference.url}>{reference.repo} · #{reference.number}</Link>
       <text wrapMode="word"><strong>{pr?.title || "Loading pull request…"}</strong></text>
-      {pr && <text fg={theme.muted} wrapMode="word"><span fg={state === "Open" ? theme.green : theme.yellow}>{state}</span> · @{pr.user.login} · {pr.head.ref} → {pr.base.ref}</text>}
-      {pr && <text fg={theme.muted} wrapMode="word">{pr.changed_files.toLocaleString()} files changed · <span fg={theme.green}>+{pr.additions.toLocaleString()}</span> / <span fg={theme.red}>−{pr.deletions.toLocaleString()}</span> · {pr.commits} commits</text>}
+      {pr && <text fg={theme.text} wrapMode="word"><span fg={state === "Open" ? theme.green : theme.yellow}>{state}</span> · @{pr.user.login} · {pr.head.ref} → {pr.base.ref}</text>}
+      {pr && <text fg={theme.text} wrapMode="word">{pr.changed_files.toLocaleString()} files changed · <span fg={theme.green}>+{pr.additions.toLocaleString()}</span> / <span fg={theme.red}>−{pr.deletions.toLocaleString()}</span> · {pr.commits} commits</text>}
     </box>
     <scrollbox ref={scroll} focused flexGrow={1} scrollX={false} contentOptions={{ paddingX: width < 60 ? 1 : 2, paddingTop: 1 }}>
       {errors.PR && <text fg={theme.red} marginBottom={1} wrapMode="word">{errors.PR}</text>}
