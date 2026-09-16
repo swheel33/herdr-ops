@@ -1,42 +1,30 @@
-import { createCliRenderer, RGBA, SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
+import { createCliRenderer, SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
 import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { execFile } from "node:child_process"
 import { addComment, aiReviewFeed, approvePR, commentFeed, loadActivity, loadChecks, loadPR, mergePR, setPRState, type Activity, type Check, type PR, type Ref, type Sections } from "./github"
 import { cleanMarkdown, commentPreview } from "./content"
 
-const color = { bg: "#16181d", panel: "#1d2027", text: "#d5d8df", muted: "#9197a5", accent: "#a8c7fa", green: "#a6d5b0", red: "#f0a0a8", yellow: "#e7cb97" }
-const syntax = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromHex(color.text) },
-  "markup.heading": { fg: RGBA.fromHex(color.text), bold: true },
-  "markup.link": { fg: RGBA.fromHex(color.accent), underline: true },
-  "markup.raw": { fg: RGBA.fromHex(color.yellow) },
-  "markup.strong": { bold: true },
-  "markup.italic": { italic: true },
-  comment: { fg: RGBA.fromHex(color.muted) },
-  keyword: { fg: RGBA.fromHex(color.accent) },
-  string: { fg: RGBA.fromHex(color.green) },
-})
+const syntax = SyntaxStyle.create()
 
 function age(date: string) {
   const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(date)) / 60_000))
   if (!Number.isFinite(minutes)) return ""
   return minutes < 1 ? "just now" : minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`
 }
-function status(state: string): [string, string] {
-  if (["success", "approved", "merged"].includes(state)) return ["✓", color.green]
-  if (["failure", "error", "timed_out", "action_required", "startup_failure", "changes_requested"].includes(state)) return ["✗", color.red]
-  if (["neutral", "skipped", "cancelled", "inactive"].includes(state)) return ["–", color.muted]
-  return ["●", color.yellow]
+function status(state: string): string {
+  if (["success", "approved", "merged"].includes(state)) return "✓"
+  if (["failure", "error", "timed_out", "action_required", "startup_failure", "changes_requested"].includes(state)) return "✗"
+  if (["neutral", "skipped", "cancelled", "inactive"].includes(state)) return "–"
+  return "●"
 }
 function Link({ url, children }: { url?: string; children: ReactNode }) {
-  return <text selectable={false} fg={color.accent} wrapMode="word">{url ? <span link={{ url }}>{children} ↗</span> : children}</text>
+  return <text selectable={false} wrapMode="word">{url ? <span link={{ url }}>{children} ↗</span> : children}</text>
 }
-function ActionButton({ label, onClick, disabled = false, danger = false }: { label: string; onClick: () => void; disabled?: boolean; danger?: boolean }) {
-  const fg = disabled ? color.muted : danger ? color.red : color.accent
-  return <box border borderStyle="single" borderColor={fg} paddingX={1} flexShrink={0} onMouseUp={e => {
+function ActionButton({ label, onClick, disabled = false }: { label: string; onClick: () => void; disabled?: boolean }) {
+  return <box border borderStyle="single" paddingX={1} flexShrink={0} onMouseUp={e => {
     if (!disabled && e.button === 0 && !e.isDragging) onClick()
-  }}><text selectable={false} fg={fg}>{label}</text></box>
+  }}><text selectable={false}>{label}</text></box>
 }
 function entryId(id: string) {
   return `entry-${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`
@@ -58,7 +46,7 @@ function linkKey(raw: string, base: string) {
 }
 function Markdown({ body }: { body: string }) {
   const content = cleanMarkdown(body)
-  return <markdown content={content} syntaxStyle={syntax} fg={color.text} conceal
+  return <markdown content={content} syntaxStyle={syntax} conceal
     tableOptions={{ style: "columns", wrapMode: "word", columnFitter: "proportional", borders: false }} />
 }
 function Section({ title, children, count, defaultOpen = true, reveal = 0 }: { title: string; children: ReactNode; count?: number | string; defaultOpen?: boolean; reveal?: number }) {
@@ -67,7 +55,7 @@ function Section({ title, children, count, defaultOpen = true, reveal = 0 }: { t
   useEffect(() => { if (reveal > 0) setOpen(true) }, [reveal])
   useKeyboard(key => { if (key.name === String(shortcut)) setOpen(value => !value) })
   return <box flexDirection="column" flexShrink={0} marginBottom={1}>
-    <text selectable={false} fg={color.muted} marginBottom={1} onMouseUp={e => {
+    <text selectable={false} marginBottom={1} onMouseUp={e => {
       if (e.button === 0 && !e.isDragging) setOpen(!open)
     }}>{open ? "▾" : "▸"} {title}{count === undefined ? "" : ` · ${count}`}</text>
     {open && children}
@@ -77,23 +65,22 @@ function Entry({ item, defaultOpen = false, summary = false, focusedId }: { item
   const [expanded, setExpanded] = useState(defaultOpen)
   const [showCode, setShowCode] = useState(false)
   const hasBody = Boolean(item.body || item.replies?.length)
-  const focused = focusedId === item.id
   useEffect(() => { if (containsEntry(item, focusedId)) setExpanded(true) }, [focusedId, item])
-  return <box id={entryId(item.id)} flexDirection="column" flexShrink={0} marginBottom={1} paddingLeft={hasBody ? 1 : 0} backgroundColor={focused ? "#2b3444" : undefined}>
-    <text selectable={false} wrapMode="word" fg={color.muted} onMouseUp={e => {
+  return <box id={entryId(item.id)} flexDirection="column" flexShrink={0} marginBottom={1} paddingLeft={hasBody ? 1 : 0}>
+    <text selectable={false} wrapMode="word" onMouseUp={e => {
       if (hasBody && e.button === 0 && !e.isDragging) setExpanded(!expanded)
-    }}><span fg={color.text}>{hasBody ? (expanded ? "▾ " : "▸ ") : "· "}{item.author}</span> {summary ? "summary · pinned" : item.action} · {age(item.date)}{item.replies?.length ? ` · ${item.replies.length} replies` : ""}</text>
-    {item.context && <text fg={color.yellow} wrapMode="word">{item.context}</text>}
-    {!expanded && item.body && <text selectable={false} fg={color.muted} wrapMode="word" onMouseUp={e => {
+    }}>{hasBody ? (expanded ? "▾ " : "▸ ") : "· "}{item.author} {summary ? "summary · pinned" : item.action} · {age(item.date)}{item.replies?.length ? ` · ${item.replies.length} replies` : ""}</text>
+    {item.context && <text wrapMode="word">{item.context}</text>}
+    {!expanded && item.body && <text selectable={false} wrapMode="word" onMouseUp={e => {
       if (e.button === 0 && !e.isDragging) setExpanded(true)
     }}>{commentPreview(item.body)}</text>}
     {expanded && hasBody && <box flexDirection="column" marginTop={1} gap={1}>
       {item.body && <Markdown body={item.body} />}
-      {item.reactions && <text fg={color.muted}>{item.reactions}</text>}
-      {item.code && <text selectable={false} fg={color.accent} onMouseUp={e => {
+      {item.reactions && <text>{item.reactions}</text>}
+      {item.code && <text selectable={false} onMouseUp={e => {
         if (e.button === 0 && !e.isDragging) setShowCode(v => !v)
       }}>{showCode ? "▾ Hide" : "▸ Show"} diff context</text>}
-      {showCode && <text fg={color.muted} wrapMode="word">{item.code}</text>}
+      {showCode && <text wrapMode="word">{item.code}</text>}
       {item.replies?.map(reply => <Entry key={reply.id} item={reply} defaultOpen focusedId={focusedId} />)}
       <Link url={item.url}>View on GitHub</Link>
     </box>}
@@ -110,8 +97,8 @@ function Checks({ items }: { items: Check[] }) {
   const [showPassing, setShowPassing] = useState(false)
   const [showOther, setShowOther] = useState(false)
   const row = (c: Check) => {
-    const [icon, fg] = status(c.state)
-    return <text key={c.id} selectable={false} fg={fg} wrapMode="word">{icon} {c.name} <span fg={color.muted}>· {c.state.replaceAll("_", " ")}</span>{c.url && <span fg={color.accent} link={{ url: c.url }}> · Details ↗</span>}</text>
+    const icon = status(c.state)
+    return <text key={c.id} selectable={false} wrapMode="word">{icon} {c.name} <span>· {c.state.replaceAll("_", " ")}</span>{c.url && <span link={{ url: c.url }}> · Details ↗</span>}</text>
   }
   return <box flexDirection="column">
     {items.filter(c => checkGroup(c) === "failed").map(row)}
@@ -120,7 +107,7 @@ function Checks({ items }: { items: Check[] }) {
       const checks = items.filter(c => checkGroup(c) === group)
       const expanded = group === "passed" ? showPassing : showOther
       return checks.length ? <box key={group} flexDirection="column">
-        <text selectable={false} fg={color.muted} onMouseUp={e => {
+        <text selectable={false} onMouseUp={e => {
           if (e.button === 0 && !e.isDragging) group === "passed" ? setShowPassing(v => !v) : setShowOther(v => !v)
         }}>{expanded ? "▾" : "▸"} {checks.length} {group === "passed" ? "passing" : "skipped / neutral / cancelled"} checks</text>
         {expanded && checks.map(row)}
@@ -271,9 +258,9 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
     }
   })
   const hint = (key: keyof Sections) => errors[key]
-    ? <text fg={color.yellow} wrapMode="word">{data[key] ? "Showing previous data. " : ""}{errors[key]}</text>
-    : !data[key] ? <text fg={color.muted}>Loading…</text>
-    : !data[key]?.length ? <text fg={color.muted}>Nothing reported.</text> : null
+    ? <text wrapMode="word">{data[key] ? "Showing previous data. " : ""}{errors[key]}</text>
+    : !data[key] ? <text>Loading…</text>
+    : !data[key]?.length ? <text>Nothing reported.</text> : null
   const state = pr?.merged ? "Merged" : pr?.draft ? "Draft" : pr?.state === "closed" ? "Closed" : "Open"
   const { summary, comments } = commentFeed(data.activity || [])
   const aiReviews = aiReviewFeed(data.activity || [])
@@ -309,7 +296,7 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
     const timer = setTimeout(() => scroll.current?.scrollChildIntoView(entryId(focusedComment)), 25)
     return () => clearTimeout(timer)
   }, [focusedComment, focusVersion, data.activity?.length])
-  return <box width={width} height={height} flexDirection="column" backgroundColor={color.bg} onMouseUp={e => {
+  return <box width={width} height={height} flexDirection="column" onMouseUp={e => {
     if (e.button !== 0) return
     const url = renderer.getLinkAt(e.x, e.y)
     if (url) { followLink(url); return }
@@ -317,22 +304,22 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
     setFocusSection(undefined)
     if (e.isDragging || renderer.getSelection()?.getSelectedText()) return
   }}>
-    <box paddingX={2} paddingY={1} flexShrink={0} backgroundColor={color.panel} flexDirection="column">
+    <box paddingX={2} paddingY={1} flexShrink={0} flexDirection="column">
       <Link url={reference.url}>{reference.repo} · #{reference.number}</Link>
-      <text fg={color.text} wrapMode="word"><strong>{pr?.title || "Loading pull request…"}</strong></text>
-      {pr && <text fg={color.muted} wrapMode="word"><span fg={state === "Open" ? color.green : color.yellow}>{state}</span> · @{pr.user.login} · {pr.head.ref} → {pr.base.ref}</text>}
-      {pr && <text fg={color.muted} wrapMode="word">{pr.changed_files.toLocaleString()} files changed · <span fg={color.green}>+{pr.additions.toLocaleString()}</span> / <span fg={color.red}>−{pr.deletions.toLocaleString()}</span> · {pr.commits} commits</text>}
+      <text wrapMode="word"><strong>{pr?.title || "Loading pull request…"}</strong></text>
+      {pr && <text wrapMode="word">{state} · @{pr.user.login} · {pr.head.ref} → {pr.base.ref}</text>}
+      {pr && <text wrapMode="word">{pr.changed_files.toLocaleString()} files changed · +{pr.additions.toLocaleString()} / −{pr.deletions.toLocaleString()} · {pr.commits} commits</text>}
     </box>
     <scrollbox ref={scroll} focused flexGrow={1} scrollX={false} contentOptions={{ paddingX: width < 60 ? 1 : 2, paddingTop: 1 }}>
-      {errors.PR && <text fg={color.red} marginBottom={1} wrapMode="word">{errors.PR}</text>}
-      {help && <box padding={1} marginBottom={1} backgroundColor={color.panel}>
-        <text fg={color.text} wrapMode="word">Scroll: arrows, j/k, Page Up/Down, mouse wheel. g/G: top/bottom. 1: description. 2: AI reviews. 3: comments. 4: checks. Click comment headings or previews to expand; click check groups and diff context to expand. Click links to open. Use the action buttons below for PR actions. Merge and close follow a y/N confirmation prompt. m: older comments. r: refresh. o: GitHub. y: copy PR URL. h: help. q: quit.</text>
+      {errors.PR && <text marginBottom={1} wrapMode="word">{errors.PR}</text>}
+      {help && <box padding={1} marginBottom={1}>
+        <text wrapMode="word">Scroll: arrows, j/k, Page Up/Down, mouse wheel. g/G: top/bottom. 1: description. 2: AI reviews. 3: comments. 4: checks. Click comment headings or previews to expand; click check groups and diff context to expand. Click links to open. Use the action buttons below for PR actions. Merge and close follow a y/N confirmation prompt. m: older comments. r: refresh. o: GitHub. y: copy PR URL. h: help. q: quit.</text>
       </box>}
       {pr && <>
         <Section title="Description"><Markdown body={pr.body || "_No description provided._"} /></Section>
         {aiReviews.length > 0 && <Section title="AI Reviews" count={aiReviews.length} reveal={focusSection === "AI Reviews" ? focusVersion : 0}>
           {aiReviews.map(review => <box key={review.provider.id} flexDirection="column" marginBottom={1}>
-            <text selectable={false} fg={color.accent} wrapMode="word">{review.provider.name}{review.summary ? " · summary" : " · review"}</text>
+            <text selectable={false} wrapMode="word"><strong>{review.provider.name}</strong>{review.summary ? " · summary" : " · review"}</text>
             {review.summary && <Entry item={review.summary} defaultOpen summary focusedId={focusedComment} />}
             {review.comments.map(item => <Entry key={item.id} item={item} focusedId={focusedComment} />)}
           </box>)}
@@ -340,10 +327,10 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
         <Section title="Comments" defaultOpen={false} count={data.activity ? comments.length + (summary ? 1 : 0) : undefined} reveal={focusSection === "Comments" ? focusVersion : 0}>
           {hint("activity")}
           {summary && <Entry key={summary.id} item={summary} defaultOpen summary focusedId={focusedComment} />}
-          {reviews.filter(review => !review.body?.trim()).map(review => <text key={review.author} fg={review.action === "approved" ? color.green : color.yellow} wrapMode="word">{review.author} · {review.action}</text>)}
-          {data.activity && !summary && !comments.length && !!data.activity.length && <text fg={color.muted}>No comments.</text>}
+          {reviews.filter(review => !review.body?.trim()).map(review => <text key={review.author} wrapMode="word">{review.author} · {review.action}</text>)}
+          {data.activity && !summary && !comments.length && !!data.activity.length && <text>No comments.</text>}
           {comments.slice(0, shown).map(item => <Entry key={item.id} item={item} focusedId={focusedComment} />)}
-          {comments.length > shown && <text selectable={false} fg={color.accent} onMouseUp={e => { if (e.button === 0) setShown(v => v + 30) }}>Show older comments · click or press m</text>}
+          {comments.length > shown && <text selectable={false} onMouseUp={e => { if (e.button === 0) setShown(v => v + 30) }}>Show older comments · click or press m</text>}
         </Section>
         <Section title="Checks" count={checkCounts || undefined}>
           {hint("checks")}
@@ -351,22 +338,22 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
         </Section>
       </>}
     </scrollbox>
-    {pr && !demo && <box paddingX={1} flexShrink={0} backgroundColor={color.panel} flexDirection="column">
+    {pr && !demo && <box paddingX={1} flexShrink={0} flexDirection="column">
       {commenting ? <box flexDirection="row" gap={1}>
-        <text fg={color.text}>Comment:</text>
+        <text>Comment:</text>
         <input focused flexGrow={1} value={commentText} placeholder="Write a comment and press Enter" onInput={setCommentText} onSubmit={submitCommentInput} />
-        <text selectable={false} fg={color.muted}>Esc cancel</text>
-      </box> : confirmAction ? <text wrapMode="word" fg={color.yellow}>Confirm {confirmAction === "merge" ? "squash merge" : `${confirmAction} pull request`}? Type y to confirm or n to cancel.</text> : <box flexDirection="row" gap={1}>
+        <text selectable={false}>Esc cancel</text>
+      </box> : confirmAction ? <text wrapMode="word"><strong>Confirm {confirmAction === "merge" ? "squash merge" : `${confirmAction} pull request`}</strong>? Type y to confirm or n to cancel.</text> : <box flexDirection="row" gap={1}>
         <ActionButton label="Comment" onClick={startComment} disabled={actionBusy} />
         <ActionButton label="Approve" onClick={() => void performAction("approve")} disabled={actionBusy || pr.state !== "open" || pr.merged} />
         <ActionButton label="Merge (squash)" onClick={() => requestAction("merge")} disabled={actionBusy || pr.state !== "open" || pr.merged || pr.draft} />
         {pr.state === "closed" && !pr.merged
           ? <ActionButton label="Reopen" onClick={() => requestAction("reopen")} disabled={actionBusy} />
-          : <ActionButton label="Close" onClick={() => requestAction("close")} disabled={actionBusy || pr.state !== "open" || pr.merged} danger />}
+          : <ActionButton label="Close" onClick={() => requestAction("close")} disabled={actionBusy || pr.state !== "open" || pr.merged} />}
       </box>}
     </box>}
-    <box paddingX={1} flexShrink={0} backgroundColor={color.panel}>
-      <text fg={color.muted} wrapMode="word">{notice || (loading ? "Refreshing…" : `Updated ${updated}`)} · r refresh · o GitHub · h help · q quit</text>
+    <box paddingX={1} flexShrink={0}>
+      <text wrapMode="word">{notice || (loading ? "Refreshing…" : `Updated ${updated}`)} · r refresh · o GitHub · h help · q quit</text>
     </box>
   </box>
 }
