@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile as execFileCallback } from "node:child_process"
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { lstat, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -11,6 +11,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2/client"
 const execFile = promisify(execFileCallback)
 const timeoutMs = Number(process.env.E2E_TIMEOUT_MS ?? 10 * 60_000)
 const model = process.env.E2E_MODEL
+const activeFixtures = new Set()
 
 async function run(executable, args, cwd) {
   const result = await execFile(executable, args, { cwd, maxBuffer: 10 * 1024 * 1024 })
@@ -29,8 +30,9 @@ async function withTimeout(promise, label, duration = timeoutMs, onTimeout) {
       promise,
       new Promise((_, reject) => {
         timer = setTimeout(() => {
-          Promise.resolve(onTimeout?.()).catch(() => undefined)
-          reject(new Error(`${label} timed out`))
+          Promise.resolve(onTimeout?.())
+            .catch(() => undefined)
+            .finally(() => reject(new Error(`${label} timed out`)))
         }, duration)
       }),
     ])
@@ -43,28 +45,40 @@ async function createFixture() {
   const root = await mkdtemp(path.join(tmpdir(), "opencode-herdr-e2e-"))
   const origin = `${root}-origin.git`
   const publisher = await mkdtemp(path.join(tmpdir(), "opencode-herdr-e2e-publisher-"))
-  await mkdir(path.join(root, "src"))
-  await run("git", ["init", "-b", "trunk"], root)
-  await run("git", ["config", "user.name", "Herdr E2E"], root)
-  await run("git", ["config", "user.email", "herdr-e2e@example.invalid"], root)
-  await run("git", ["init", "--bare", origin], root)
-  await run("git", ["symbolic-ref", "HEAD", "refs/heads/trunk"], origin)
-  await run("git", ["remote", "add", "origin", origin], root)
-  await writeFile(path.join(root, "AGENTS.md"), "Keep implementations direct. Use only verification relevant to the changed behavior.\n")
-  await writeFile(path.join(root, "src", "server.js"), "export function handleRequest(pathname) { return pathname === '/' ? 'ok' : 'not found' }\n")
-  await run("git", ["add", "."], root)
-  await run("git", ["commit", "-m", "Initial fixture"], root)
-  await run("git", ["push", "-u", "origin", "trunk"], root)
-  await run("git", ["clone", origin, "."], publisher)
-  await run("git", ["config", "user.name", "Herdr E2E Publisher"], publisher)
-  await run("git", ["config", "user.email", "publisher@example.invalid"], publisher)
-  await writeFile(path.join(publisher, "REMOTE-ONLY.md"), "fresh origin commit\n")
-  await run("git", ["add", "REMOTE-ONLY.md"], publisher)
-  await run("git", ["commit", "-m", "Advance origin"], publisher)
-  await run("git", ["push", "origin", "trunk"], publisher)
-  const remoteCommit = (await run("git", ["rev-parse", "HEAD"], publisher)).trim()
-  await rm(publisher, { recursive: true, force: true })
-  return { root, origin, remoteCommit }
+  try {
+    await mkdir(path.join(root, "src"))
+    await run("git", ["init", "-b", "trunk"], root)
+    await run("git", ["config", "user.name", "Herdr E2E"], root)
+    await run("git", ["config", "user.email", "herdr-e2e@example.invalid"], root)
+    await run("git", ["init", "--bare", origin], root)
+    await run("git", ["symbolic-ref", "HEAD", "refs/heads/trunk"], origin)
+    await run("git", ["remote", "add", "origin", origin], root)
+    await writeFile(path.join(root, ".gitignore"), ".env*\n")
+    await writeFile(path.join(root, ".env.local"), "E2E_SECRET=fixture\n")
+    await writeFile(path.join(root, "package.json"), `${JSON.stringify({ name: "herdr-e2e-fixture", private: true }, null, 2)}\n`)
+    await writeFile(path.join(root, "AGENTS.md"), "Keep implementations direct. Use only verification relevant to the changed behavior.\n")
+    await writeFile(path.join(root, "src", "server.js"), "export function handleRequest(pathname) { return pathname === '/' ? 'ok' : 'not found' }\n")
+    await run("git", ["add", "."], root)
+    await run("git", ["commit", "-m", "Initial fixture"], root)
+    await run("git", ["push", "-u", "origin", "trunk"], root)
+    await run("git", ["clone", origin, "."], publisher)
+    await run("git", ["config", "user.name", "Herdr E2E Publisher"], publisher)
+    await run("git", ["config", "user.email", "publisher@example.invalid"], publisher)
+    await writeFile(path.join(publisher, "REMOTE-ONLY.md"), "fresh origin commit\n")
+    await run("git", ["add", "REMOTE-ONLY.md"], publisher)
+    await run("git", ["commit", "-m", "Advance origin"], publisher)
+    await run("git", ["push", "origin", "trunk"], publisher)
+    const remoteCommit = (await run("git", ["rev-parse", "HEAD"], publisher)).trim()
+    await rm(publisher, { recursive: true, force: true })
+    return { root, origin, remoteCommit }
+  } catch (error) {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(origin, { recursive: true, force: true }),
+      rm(publisher, { recursive: true, force: true }),
+    ])
+    throw error
+  }
 }
 
 async function rootFingerprint(root) {
@@ -83,6 +97,41 @@ async function listLinkedWorktrees(root) {
   assert.ok(Array.isArray(worktrees), "Herdr worktree list must include worktrees")
   const canonicalRoot = await realpath(root)
   return worktrees.filter((worktree) => path.resolve(worktree.path) !== canonicalRoot)
+}
+
+async function listE2EWorkspaces() {
+  const output = JSON.parse(await run("herdr", ["workspace", "list"], process.cwd()))
+  const workspaces = output.result?.workspaces
+  if (!Array.isArray(workspaces)) throw new Error("Herdr workspace list must include workspaces")
+  return workspaces.filter((workspace) => {
+    const label = workspace.label
+    const repoName = workspace.worktree?.repo_name
+    return [label, repoName].some((value) => typeof value === "string" && value.startsWith("opencode-herdr-e2e-"))
+  })
+}
+
+async function closeE2EWorkspace(workspace) {
+  if (workspace.worktree?.is_linked_worktree === true) {
+    await run("herdr", ["worktree", "remove", "--workspace", workspace.workspace_id, "--force"], process.cwd())
+    return
+  }
+  await run("herdr", ["workspace", "close", workspace.workspace_id], process.cwd())
+}
+
+async function cleanupE2EWorkspaces(predicate = () => true) {
+  let workspaces
+  try {
+    workspaces = await listE2EWorkspaces()
+  } catch {
+    return
+  }
+  for (const workspace of workspaces.filter(predicate)) {
+    try {
+      await closeE2EWorkspace(workspace)
+    } catch {
+      // Cleanup must not hide the E2E failure.
+    }
+  }
 }
 
 async function waitFor(label, callback, duration = timeoutMs) {
@@ -113,19 +162,24 @@ async function assertWorkspace(worktree, root) {
 }
 
 async function cleanupFixture(fixture) {
-  try {
-    for (const worktree of await listLinkedWorktrees(fixture.root)) {
-      if (typeof worktree.open_workspace_id === "string") {
-        await run("herdr", ["worktree", "remove", "--workspace", worktree.open_workspace_id, "--force"], fixture.root)
-      } else {
-        await run("git", ["worktree", "remove", "--force", worktree.path], fixture.root)
+  if (fixture.cleanupPromise) return fixture.cleanupPromise
+  fixture.cleanupPromise = (async () => {
+    try {
+      for (const worktree of await listLinkedWorktrees(fixture.root)) {
+        if (typeof worktree.open_workspace_id === "string") {
+          await run("herdr", ["worktree", "remove", "--workspace", worktree.open_workspace_id, "--force"], fixture.root)
+        } else {
+          await run("git", ["worktree", "remove", "--force", worktree.path], fixture.root)
+        }
       }
+    } catch {
+      // The workspace sweep below handles fixtures whose root has already disappeared.
     }
-  } catch {
-    // Cleanup must not hide the E2E failure.
-  }
-  await rm(fixture.root, { recursive: true, force: true })
-  await rm(fixture.origin, { recursive: true, force: true })
+    await cleanupE2EWorkspaces((workspace) => workspace.worktree?.repo_root === fixture.root)
+    await rm(fixture.root, { recursive: true, force: true })
+    await rm(fixture.origin, { recursive: true, force: true })
+  })()
+  return fixture.cleanupPromise
 }
 
 async function promptPlan(client, sessionID, root) {
@@ -142,7 +196,9 @@ async function promptPlan(client, sessionID, root) {
 }
 
 async function runCohesiveWorkflow(client) {
+  await cleanupE2EWorkspaces()
   const fixture = await createFixture()
+  activeFixtures.add(fixture)
   let sessionID
   try {
     const before = await rootFingerprint(fixture.root)
@@ -168,6 +224,10 @@ async function runCohesiveWorkflow(client) {
       return current.length === 1 ? current : undefined
     })
     const agent = await assertWorkspace(worktrees[0], fixture.root)
+    const envLink = path.join(worktrees[0].path, ".env.local")
+    assert.equal((await lstat(envLink)).isSymbolicLink(), true, "worktree environment file must be a symlink")
+    assert.equal(await realpath(envLink), await realpath(path.join(fixture.root, ".env.local")), "worktree environment file must point to the primary checkout")
+    await readFile(path.join(worktrees[0].path, "pnpm-lock.yaml"), "utf8")
     const fetched = (await run("git", ["rev-parse", "refs/remotes/origin/trunk"], fixture.root)).trim()
     assert.equal(fetched, fixture.remoteCommit, "dispatch must freshly fetch origin/trunk")
     assert.equal((await run("git", ["merge-base", fixture.remoteCommit, "HEAD"], worktrees[0].path)).trim(), fixture.remoteCommit, "feature branch must contain fresh origin commit")
@@ -181,17 +241,41 @@ async function runCohesiveWorkflow(client) {
   } finally {
     if (sessionID) await client.session.delete({ sessionID, directory: fixture.root }).catch(() => undefined)
     await cleanupFixture(fixture)
+    activeFixtures.delete(fixture)
   }
 }
 
 const controller = new AbortController()
-const { server } = await createOpencode({ signal: controller.signal, timeout: 30_000 })
+let server
+let shutdownPromise
+
+async function shutdown() {
+  if (shutdownPromise) return shutdownPromise
+  shutdownPromise = (async () => {
+    controller.abort()
+    server?.close()
+    await Promise.all([...activeFixtures].map((fixture) => cleanupFixture(fixture)))
+    await cleanupE2EWorkspaces()
+  })()
+  return shutdownPromise
+}
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, () => {
+    void shutdown().finally(() => {
+      process.exitCode = signal === "SIGINT" ? 130 : 143
+    })
+  })
+}
+
+await cleanupE2EWorkspaces()
+const created = await createOpencode({ signal: controller.signal, timeout: 30_000 })
+server = created.server
 const client = createOpencodeClient({ baseUrl: server.url })
 try {
   const commands = unwrap(await client.command.list(), "list OpenCode commands")
   assert.ok(commands.some((command) => command.name === "feature"), "plugin must register /feature")
   await runCohesiveWorkflow(client)
 } finally {
-  controller.abort()
-  server.close()
+  await shutdown()
 }

@@ -7,6 +7,7 @@ import { HerdrDispatcher, formatDispatchResult } from "./dispatch.js"
 import { DispatchError } from "./errors.js"
 import { RepositoryMaintenance } from "./maintenance.js"
 import { NodeCommandRunner } from "./process.js"
+import { HerdrTabTitleSynchronizer } from "./tab-titles.js"
 import { isLinkedWorktree, resolveRepository } from "./validation.js"
 import {
   configureFeatureWorkflow,
@@ -35,6 +36,7 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
     }).catch(() => {})
   }
 
+  const titleSynchronizer = new HerdrTabTitleSynchronizer(runner, directory, logger)
   const linkedWorktree = await isLinkedWorktree(runner, directory, realpath)
   if (linkedWorktree) {
     return {
@@ -49,6 +51,8 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
           Object.assign(output.message, { variant: models.implementor.variant })
         }
       },
+      event: async ({ event }) => titleSynchronizer.handle(event),
+      dispose: async () => titleSynchronizer.dispose(),
     }
   }
 
@@ -65,12 +69,19 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
     })
   }
   return {
-    dispose: async () => maintenance?.dispose(),
     event: async ({ event }) => {
-      if (event.type !== "session.idle" && event.type !== "session.error" && event.type !== "session.deleted") return
-      const properties = event.properties as { sessionID?: string; info?: { id: string } }
-      const sessionID = properties.sessionID ?? properties.info?.id
-      if (sessionID) authorization.clear(sessionID)
+      if (event.type === "session.idle" || event.type === "session.error" || event.type === "session.deleted") {
+        const properties = event.properties as { sessionID?: string; info?: { id: string } }
+        const sessionID = properties.sessionID ?? properties.info?.id
+        if (sessionID) authorization.clear(sessionID)
+      }
+      await titleSynchronizer.handle(event)
+    },
+    dispose: async () => {
+      await Promise.all([
+        titleSynchronizer.dispose(),
+        maintenance?.dispose() ?? Promise.resolve(),
+      ])
     },
     config: async (config) => configureFeatureWorkflow(config, false, models),
     "chat.message": async (input, output) => {

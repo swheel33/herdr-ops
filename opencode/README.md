@@ -8,10 +8,12 @@ The plugin intentionally handles one workflow:
 
 1. `/feature` authorizes one dispatch.
 2. The plugin creates one new branch and linked worktree.
-3. It starts one Build agent in a 70/30 agent and shell layout.
-4. It delivers the plan and waits for the agent to begin working.
-5. It reports `dispatched` only after that working state is confirmed.
-6. It periodically refreshes pull-request metadata, safely advances local `develop`, and removes only clean, inactive worktrees for closed or merged pull requests.
+3. It links ignored local environment files into the worktree.
+4. It installs worktree dependencies with `pnpm install`.
+5. It starts one Build agent in a 70/30 agent and shell layout.
+6. It delivers the plan and waits for the agent to begin working.
+7. It reports `dispatched` only after that working state is confirmed.
+8. It periodically refreshes pull-request metadata, safely advances local `develop`, and removes only clean, inactive worktrees for closed or merged pull requests.
 
 Batch dispatches and existing-branch continuation are outside this plugin's scope.
 
@@ -21,7 +23,9 @@ Batch dispatches and existing-branch continuation are outside this plugin's scop
 - Herdr 0.9.0
 - Herdr's OpenCode integration
 - Git
+- GitHub CLI (`gh`), authenticated for PR metadata maintenance
 - Node.js 20 or newer
+- `pnpm` for installing dependencies in new worktrees
 
 Install Herdr's OpenCode integration once:
 
@@ -75,6 +79,8 @@ The default base is the freshly fetched branch advertised by `origin/HEAD`. An e
 The handoff and final result are recorded in `<git-common-dir>/opencode-herdr-dispatch/handoffs.jsonl`. Failed handoffs include any workspace, pane, or agent identifiers already created. A submitted plan whose agent does not become working is not reported as dispatched and is never retried automatically.
 
 Agents in linked worktrees receive the implementation instructions and cannot invoke `/feature` recursively.
+
+OpenCode root-session titles are synchronized to their Herdr tabs, including retrying while Herdr registers the agent. Titles owned by the plugin are cleared on disposal only when the tab still has that title. Dispatch lifecycle events are emitted through OpenCode application logs; implementation plans and environment file contents are not logged.
 
 ## Development
 
