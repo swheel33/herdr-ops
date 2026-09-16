@@ -18,12 +18,3 @@ title = "Pull request"
 description = "GitHub pull request viewer."
 placement = "split"
 command = ["bun", "bin/open-pr.ts", "pane"]
-
-[[panes]]
-id = "error"
-title = "Pull request unavailable"
-description = "Show a pull request opening error."
-placement = "popup"
-width = "70%"
-height = 10
-command = ["bun", "bin/open-pr.ts", "error"]

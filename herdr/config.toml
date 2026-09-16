@@ -134,3 +134,9 @@ rows = [
     { token = "$pr_closed", fg = "#f85149", bold = true },
   ],
 ]
+
+[ui.toast]
+delivery = "herdr"
+
+[ui.toast.herdr]
+position = "bottom-right"

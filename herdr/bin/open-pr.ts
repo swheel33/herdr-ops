@@ -27,21 +27,7 @@ function api(args: string[]): any {
 }
 
 try {
-  if (process.argv[2] === "error") {
-    const message = process.env.HERDR_OPS_PR_ERROR || "Unable to open the pull request."
-    console.log("")
-    console.log("Pull request unavailable")
-    console.log("")
-    console.log(message)
-    console.log("")
-    console.log("Press any key to close.")
-    if (process.stdin.isTTY) process.stdin.setRawMode(true)
-    process.stdin.resume()
-    process.stdin.once("data", () => {
-      if (process.stdin.isTTY) process.stdin.setRawMode(false)
-      process.exit(0)
-    })
-  } else if (process.argv[2] === "pane") {
+  if (process.argv[2] === "pane") {
     const url = process.env.HERDR_OPS_PR_URL
     if (!url) throw new Error("Missing PR URL")
     const result = spawnSync("bun", [resolve(root, "../cli/ghpr/src/cli.tsx"), url], { stdio: "inherit" })
@@ -98,9 +84,9 @@ try {
 } catch (error: any) {
   const message = errorMessage(error)
   console.error(`herdr-pr: ${message}`)
-  if (process.argv[2] !== "pane" && context.workspace_id) {
-    try { api(["plugin", "pane", "open", "--plugin", "herdr-ops.pr", "--entrypoint", "error",
-      "--placement", "popup", "--workspace", context.workspace_id, "--env", `HERDR_OPS_PR_ERROR=${message}`, "--focus"]) } catch {}
+  if (process.argv[2] !== "pane") {
+    const title = message === noPullRequestMessage ? "Pull request unavailable" : "Pull request"
+    try { api(["notification", "show", title, "--body", message]) } catch {}
   }
   process.exitCode = 1
 }
