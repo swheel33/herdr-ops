@@ -99,4 +99,4 @@ npm run test:e2e
 
 The E2E workflow creates a disposable repository, worktree, pane, and Build agent and may incur model usage. Set `E2E_MODEL=provider/model-id` or `E2E_TIMEOUT_MS=<milliseconds>` when needed.
 
-Repository maintenance runs immediately and every five minutes. PR sidebar metadata is reported with a two-hour TTL. Cleanup skips dirty worktrees and workspaces with active agents, and never uses forced worktree removal.
+Repository maintenance runs immediately and every minute. PR sidebar metadata is reported with a two-hour TTL. Cleanup skips dirty worktrees and workspaces with active agents, and never uses forced worktree removal.

@@ -11,7 +11,7 @@ const DEVELOP_BRANCH = "develop"
 const METADATA_SOURCE = "herdr-ops.pr"
 const METADATA_TOKENS = ["pr_branch", "pr_open", "pr_draft", "pr_merged", "pr_closed"] as const
 
-export const MAINTENANCE_INTERVAL_MS = 5 * 60 * 1_000
+export const MAINTENANCE_INTERVAL_MS = 1 * 60 * 1_000
 export const METADATA_TTL_MS = 2 * 60 * 60 * 1_000
 const MAINTENANCE_STATE_FILE = "maintenance.json"
 
