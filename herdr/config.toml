@@ -128,10 +128,10 @@ rows = [
   ["workspace"],
   [
     { token = "$pr_branch", dim = true },
-    { token = "$pr_open", fg = "#3fb950", bold = true },
-    { token = "$pr_draft", fg = "#d29922", bold = true },
-    { token = "$pr_merged", fg = "#a371f7", bold = true },
-    { token = "$pr_closed", fg = "#f85149", bold = true },
+    { token = "$pr_open", fg = "#76946a", bold = true },
+    { token = "$pr_draft", fg = "#c0a36e", bold = true },
+    { token = "$pr_merged", fg = "#957fb8", bold = true },
+    { token = "$pr_closed", fg = "#c34043", bold = true },
   ],
 ]
 
