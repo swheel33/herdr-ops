@@ -3,7 +3,6 @@ import { resolve } from "node:path"
 import { CommandError, DispatchError } from "./errors.js"
 import type {
   CommandRunner,
-  DispatchMode,
   DispatchInput,
   RepositoryInfo,
 } from "./types.js"
@@ -12,12 +11,10 @@ export const MIN_PLAN_LENGTH = 80
 export const MAX_TITLE_LENGTH = 80
 
 export interface ValidatedDispatchInput {
-  mode: DispatchMode
   title: string
   branch: string
   plan: string
   base?: string
-  source?: string
   allowDirtyRoot: boolean
 }
 
@@ -155,27 +152,18 @@ export async function validateDispatchInput(
   const branch = input.branch.trim()
   const plan = input.plan.trim()
   const base = input.base?.trim()
-  const source = input.source?.trim()
 
   if (!title) throw new DispatchError("Feature title must not be empty.")
   if (title.length > MAX_TITLE_LENGTH) {
     throw new DispatchError(`Feature title must be at most ${MAX_TITLE_LENGTH} characters.`)
   }
-  if (input.mode === "new" && source) {
-    throw new DispatchError("New feature dispatches do not accept a source branch.")
-  }
-  if (input.mode !== "new" && !source) {
-    throw new DispatchError(`${input.mode} dispatches require an existing source branch.`)
-  }
   validatePlan(plan)
   await validateBranch(runner, cwd, branch, signal)
   return {
-    mode: input.mode,
     title,
     branch,
     plan,
     ...(base ? { base } : {}),
-    ...(source ? { source } : {}),
     allowDirtyRoot: input.allowDirtyRoot ?? false,
   }
 }

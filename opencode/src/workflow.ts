@@ -30,7 +30,7 @@ export function resolveWorkflowModels(options: Record<string, unknown> = {}): Wo
   return { implementor: role("implementor", IMPLEMENTOR_MODEL, "high") }
 }
 
-export const FEATURE_COMMAND_TEMPLATE = `Dispatch the agreed implementation outcome from this conversation to Herdr. This /feature invocation is explicit authorization to dispatch; ordinary planning conversation is not.
+export const FEATURE_COMMAND_TEMPLATE = `Dispatch the single agreed implementation outcome from this conversation to Herdr. This /feature invocation is explicit authorization to dispatch; ordinary planning conversation is not.
 
 Optional scope filter or clarification: $ARGUMENTS
 
@@ -38,13 +38,11 @@ Use the latest settled plan plus the user's subsequent corrections. Copy that pl
 
 If no implementation-ready scope exists, or a material product/design decision remains unresolved, ask the user rather than choose for them. If you finish this turn without dispatch, ask them to run /feature again when ready.
 
-One feature, "all together", or "one dispatch" means ONE worktree. Keep implementation layers and shared foundations together. Split only genuinely independent, separately releasable outcomes with no shared prerequisite or likely conflicting edits. For multiple outcomes ask one multi-select question, explicitly explaining that each selection creates a separate concurrent worktree. Apply custom answers that merge the grouping.
-
-Read applicable project instructions. Ask about concrete conflicts with the agreed plan. Inspect Git metadata with inspect_herdr_repository before dispatch. Use new from freshly fetched origin default unless another base is requested; use continue for existing feature branches/PRs, and branch_from only for explicitly separate or stacked work. A primary checkout branch such as develop/main is a base, not a continue target. Dirty-root approval does not copy uncommitted files; explain this and obtain explicit approval when needed.
+Read applicable project instructions. Ask about concrete conflicts with the agreed plan. Inspect Git metadata with inspect_herdr_repository before dispatch. Dispatch one new branch from a freshly fetched origin default unless another base is explicitly requested. A primary checkout branch such as develop/main is a base, not a dispatch target. Dirty-root approval does not copy uncommitted files; explain this and obtain explicit approval when needed.
 
 Put branch creation, fetching, and worktree setup intent in the tool's Git fields, not as tasks in the implementation plan. The plugin completes that setup before the implementor receives the plan. Always launch the configured implementor; do not carry the orchestrator's current agent or model into the worktree.
 
-Call dispatch_features_to_herdr once, using the invocation authorization provided by the plugin. Report all successes, failures, and partial resources. Do not retry an unclear or failed launch. Delivery is not implementation completion. Remain the orchestrator in this checkout.`
+Call dispatch_feature_to_herdr once, using the invocation authorization provided by the plugin. Report the result and any partial resources. Do not retry an unclear or failed launch. Delivery is not implementation completion. Remain the orchestrator in this checkout.`
 
 export const IMPLEMENTOR_PROMPT = `You implement the agreed handoff in this worktree. Workspace setup is already complete. Use the assigned current directory and branch. Do not create another worktree or branch, re-fetch a newer base, or move the work to another checkout to repeat setup instructions in the plan. If the assignment is inconsistent, report it before proceeding. The handoff is the settled scope, not an invitation to redesign it.
 Read applicable project instructions and relevant source, then execute the plan. Reuse existing mechanisms and remove superseded duplication when the agreed change calls for it. Do not add speculative abstractions, compatibility layers, unrelated cleanup, or tests that were not requested.
@@ -98,8 +96,7 @@ export function configureFeatureWorkflow(config: Config, linkedWorktree = false,
       ...models.implementor,
       permission: {
         ...config.agent.build?.permission,
-        dispatch_features_to_herdr: "deny",
-        dispatch_to_herdr: "deny",
+        dispatch_feature_to_herdr: "deny",
       } as NonNullable<Config["permission"]>,
     }
     delete config.command.feature
@@ -114,7 +111,7 @@ export function configureFeatureWorkflow(config: Config, linkedWorktree = false,
   if (typeof config.permission === "object") {
     Object.assign(config.permission, {
       inspect_herdr_repository: "allow",
-      dispatch_features_to_herdr: "allow",
+      dispatch_feature_to_herdr: "allow",
     })
   }
 }
