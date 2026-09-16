@@ -115,7 +115,7 @@ For a new worktree, the plugin:
 3. Runs `pnpm install`.
 4. Creates or validates a 70/30 top-agent and bottom-shell layout.
 5. Starts OpenCode's built-in Build agent with the configured implementation model and variant, using `--auto` to approve permissions that are not explicitly denied.
-6. Delivers the implementation plan and waits for OpenCode to begin processing it.
+6. Delivers the implementation plan, then independently waits up to 60 seconds for OpenCode to begin processing it. A delayed observation does not resubmit an accepted plan.
 
 Existing worktrees skip dependency installation. Unexpected pane layouts fail safely instead of being rearranged.
 
@@ -154,9 +154,10 @@ Restart OpenCode after rebuilding.
 
 ## Development
 
-Build and typecheck the plugin:
+Build, test, and typecheck the plugin:
 
 ```sh
+npm test
 npm run typecheck
 npm run build
 ```
