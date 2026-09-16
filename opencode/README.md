@@ -56,25 +56,24 @@ Restart OpenCode after installing, rebuilding, or changing its configuration.
 
 ## Model Configuration
 
-Configure the orchestrator (Plan mode and `/feature`) and implementor independently using plugin options:
+Configure the implementor used in new Herdr worktrees using plugin options:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     ["file:///home/YOUR_USER/Work/herdr-ops/opencode/dist/index.js", {
-      "orchestrator": { "model": "openai/gpt-6-astra", "variant": "default" },
       "implementor": { "model": "openai/gpt-5.6-luna", "variant": "high" }
     }]
   ]
 }
 ```
 
-These are the defaults. Use any available `provider/model` and a variant supported by that model. When changing a model without specifying a variant, the plugin uses `default` rather than inheriting the previous model's reasoning level. Configure the plugin globally so the implementor settings are also available in new worktrees.
+This is the default. Use any available `provider/model` and a variant supported by that model. When changing a model without specifying a variant, the plugin uses `default` rather than inheriting the previous model's reasoning level. Configure the plugin globally so the implementor settings are also available in new worktrees. The plugin does not replace primary-checkout agents or models.
 
 ## Usage
 
-Discuss the work in a primary checkout, then run:
+Work directly in the primary checkout as usual. When a change should be dispatched to a separate Herdr worktree, run:
 
 ```text
 /feature
@@ -82,9 +81,9 @@ Discuss the work in a primary checkout, then run:
 /feature continue Alice's existing filtering branch
 ```
 
-Discuss the work in the primary checkout, then run `/feature` in the same conversation. The primary checkout remains the orchestrator regardless of the selected agent/model. The new worktree always starts the configured implementor with its own model and variant. Its handoff identifies the assigned directory, branch, and pinned base and marks workspace setup as complete.
+Run `/feature` in the same conversation as the settled plan. The command remains optional and its dispatch tool requires a single-use authorization issued by that invocation. The new worktree always starts the configured implementor with its own model and variant. Its handoff identifies the assigned directory, branch, and pinned base and marks workspace setup as complete. Normal primary-checkout editing, task delegation, and `plan_exit` remain available.
 
-The command issues a single-use authorization bound to its session and user message. Ordinary conversation cannot authorize dispatch, even when it says “implement this.” Authorization expires when another user message arrives, the session becomes idle/errors/exits, or dispatch consumes it. Clarification through the question tool can happen within the command turn; if planning ends without dispatch, run `/feature` again when ready. In the primary checkout, edits, task delegation, and `plan_exit` are denied.
+The command issues a single-use authorization bound to its session and user message. Ordinary conversation cannot authorize dispatch, even when it says “implement this.” Authorization expires when another user message arrives, the session becomes idle/errors/exits, or dispatch consumes it. Clarification through the question tool can happen within the command turn; if planning ends without dispatch, run `/feature` again when ready.
 
 Ready plans are copied rather than expanded. Later corrections override earlier proposals; necessary explicitly referenced details are included. Small changes can have a one-paragraph handoff. The legacy coordinator registration is disabled.
 

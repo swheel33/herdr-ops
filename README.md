@@ -48,34 +48,15 @@ Register the resulting `dist/index.js` in `~/.config/opencode/opencode.json` usi
 
 ### Herdr PR plugin
 
-Build `ghpr` first, then link the Herdr plugin:
+Build `ghpr` first, then install the committed full Herdr configuration and link the plugin:
 
 ```sh
-herdr plugin link "$HOME/Work/herdr-ops/herdr"
-herdr plugin enable herdr-ops.pr
+cd ~/Work/herdr-ops
+bun run --cwd cli/ghpr build
+./herdr/setup.sh
 ```
 
-The plugin uses Herdr `0.9.0` workspace metadata tokens. Add its action to `~/.config/herdr/config.toml` as shown below, keeping the existing `prefix+g` lazygit and `prefix+p` previous-tab bindings:
-
-```toml
-[[keys.command]]
-key = "prefix+alt+p"
-type = "plugin_action"
-command = "herdr-ops.pr.open"
-description = "open pull request"
-
-[ui.sidebar.spaces]
-rows = [
-  ["workspace"],
-  [
-    { token = "branch", dim = true },
-    { token = "$pr_open", fg = "#3fb950", bold = true },
-    { token = "$pr_draft", fg = "#d29922", bold = true },
-    { token = "$pr_merged", fg = "#a371f7", bold = true },
-    { token = "$pr_closed", fg = "#f85149", bold = true },
-  ],
-]
-```
+`herdr/setup.sh` backs up an existing differing config, installs the committed config, enables `herdr-ops.pr`, and reloads the running Herdr server. It is safe to run again; an unchanged config is not backed up again. The config is based on Omarchy's `/usr/share/omarchy/config/herdr/config.toml` and includes the PR sidebar metadata, `prefix+e` Neovim popup, `prefix+g` Lazygit popup, `prefix+p` PR action, and tab navigation bindings.
 
 PR tokens are display-only. The pane is opened only by the configured keybinding or the Herdr action API. Restart the Herdr server after upgrading the client so its protocol matches the mise-managed binary; do not stop a live server if doing so would interrupt active panes.
 
