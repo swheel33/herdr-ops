@@ -63,7 +63,7 @@ Configure the implementor used in new Herdr worktrees using plugin options:
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     ["file:///home/YOUR_USER/Work/herdr-ops/opencode/dist/index.js", {
-      "implementor": { "model": "openai/gpt-5.6-luna", "variant": "high" }
+      "implementor": { "model": "openai/gpt-5.6-luna-fast", "variant": "high" }
     }]
   ]
 }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import type { Config } from "@opencode-ai/plugin"
 
 export const IMPLEMENTOR_AGENT = "build"
-export const IMPLEMENTOR_MODEL = "openai/gpt-5.6-luna"
+export const IMPLEMENTOR_MODEL = "openai/gpt-5.6-luna-fast"
 
 export interface WorkflowModels {
   implementor: { model: string; variant: string }
