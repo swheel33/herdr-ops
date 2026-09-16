@@ -39,7 +39,6 @@ bun run dev owner/repo#123
 ```sh
 cd opencode
 npm ci
-npm test
 npm run typecheck
 npm run build
 ```

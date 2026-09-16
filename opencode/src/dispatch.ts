@@ -655,7 +655,7 @@ export class HerdrDispatcher {
         validated.branch,
       )
       partial.agentName = agentName
-      this.log("info", "Starting OpenCode Build agent", {
+      this.log("info", "Starting OpenCode Build agent in auto-approve mode", {
         workspaceId: worktree.workspaceId,
         paneId: worktree.paneId,
         agentName,
@@ -677,6 +677,7 @@ export class HerdrDispatcher {
           IMPLEMENTOR_AGENT,
           "--model",
           this.implementationModel,
+          "--auto",
         ],
         cwd: repository.root,
         ...(signal ? { signal } : {}),

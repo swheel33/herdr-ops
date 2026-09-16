@@ -114,12 +114,12 @@ For a new worktree, the plugin:
 2. Links ignored `.env` and `.env.*` files from the primary checkout without overwriting existing files.
 3. Runs `pnpm install`.
 4. Creates or validates a 70/30 top-agent and bottom-shell layout.
-5. Starts OpenCode's built-in Build agent with the configured implementation model and variant.
+5. Starts OpenCode's built-in Build agent with the configured implementation model and variant, using `--auto` to approve permissions that are not explicitly denied.
 6. Delivers the implementation plan and waits for OpenCode to begin processing it.
 
 Existing worktrees skip dependency installation. Unexpected pane layouts fail safely instead of being rearranged.
 
-OpenCode processes inside linked worktrees receive tab-title synchronization and implementation settings for the built-in Build agent. They cannot invoke `/feature` or recursively dispatch more worktrees.
+OpenCode processes inside linked worktrees receive tab-title synchronization and implementation settings for the built-in Build agent. They run with `--auto`, while explicit permission denials remain enforced. They cannot invoke `/feature` or recursively dispatch more worktrees.
 
 The exact handoff, source conversation message IDs, and dispatch results are recorded locally in `<git-common-dir>/opencode-herdr-dispatch/handoffs.jsonl`. The dispatch result includes its receipt ID.
 
@@ -146,7 +146,6 @@ Closed-PR cleanup calls Herdr with `--force`. Dirty and untracked worktree files
 cd ~/Work/herdr-ops/opencode
 git pull
 npm ci
-npm test
 npm run typecheck
 npm run build
 ```
@@ -155,10 +154,9 @@ Restart OpenCode after rebuilding.
 
 ## Development
 
-Focused tests cover title synchronization, concurrent title updates, `develop` fast-forwarding, PR cleanup, and maintenance lease suppression:
+Build and typecheck the plugin:
 
 ```sh
-npm test
 npm run typecheck
 npm run build
 ```
