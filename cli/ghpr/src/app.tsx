@@ -93,9 +93,9 @@ function Section({ title, children, count, defaultOpen = true, reveal = 0 }: { t
   useEffect(() => { if (reveal > 0) setOpen(true) }, [reveal])
   useKeyboard(key => { if (key.name === String(shortcut)) setOpen(value => !value) })
   return <box flexDirection="column" flexShrink={0} marginBottom={1}>
-    <text selectable={false} fg={theme.muted} marginBottom={1} onMouseUp={e => {
+    <text selectable={false} fg={theme.accent} marginBottom={1} onMouseUp={e => {
       if (e.button === 0 && !e.isDragging) setOpen(!open)
-    }}>{open ? "▾" : "▸"} {title}{count === undefined ? "" : ` · ${count}`}</text>
+    }}><strong>{open ? "▾" : "▸"} {title}{count === undefined ? "" : ` · ${count}`}</strong></text>
     {open && children}
   </box>
 }
