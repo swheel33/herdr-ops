@@ -7,6 +7,7 @@ import test from "node:test"
 import { CommandError } from "../dist/errors.js"
 import { RepositoryMaintenance } from "../dist/maintenance.js"
 import { HerdrTabTitleSynchronizer } from "../dist/tab-titles.js"
+import { FeatureAuthorization, configureFeatureWorkflow } from "../dist/workflow.js"
 
 function result(stdout = "") {
   return { stdout, stderr: "", exitCode: 0, signal: null }
@@ -20,6 +21,46 @@ function notFound(command) {
     signal: null,
   })
 }
+
+test("keeps primary agents and normal permissions available", () => {
+  const config = {
+    agent: {
+      plan: { model: "provider/planner", permission: { edit: "allow" } },
+      build: { model: "provider/builder" },
+    },
+    permission: { edit: "allow", task: "allow", plan_exit: "allow" },
+  }
+
+  configureFeatureWorkflow(config)
+
+  assert.equal(config.agent.plan.model, "provider/planner")
+  assert.equal(config.agent.build.model, "provider/builder")
+  assert.equal(config.agent.plan.permission.edit, "allow")
+  assert.equal(config.agent.plan.permission.task, undefined)
+  assert.equal(config.agent.plan.permission.plan_exit, undefined)
+  assert.equal(config.permission.edit, "allow")
+  assert.equal(config.permission.task, "allow")
+  assert.equal(config.permission.plan_exit, "allow")
+  assert.equal(config.permission.dispatch_to_herdr, undefined)
+  assert.equal(config.command.feature.subtask, false)
+  assert.equal(config.permission.dispatch_features_to_herdr, "allow")
+})
+
+test("keeps feature dispatch authorization single-use and message-bound", () => {
+  const authorization = new FeatureAuthorization()
+  const token = authorization.issue("session-1", ["plan-1"])
+  authorization.bind("session-1", "command-1", authorization.marker(token))
+
+  assert.throws(
+    () => authorization.consume("session-1", token, "another-message"),
+    /current \/feature invocation/u,
+  )
+  assert.deepEqual(authorization.consume("session-1", token, "command-1"), ["plan-1"])
+  assert.throws(
+    () => authorization.consume("session-1", token, "command-1"),
+    /current \/feature invocation/u,
+  )
+})
 
 async function maintenanceForTest(t, runner, commonDir) {
   const directory = commonDir ?? await mkdtemp(path.join(tmpdir(), "opencode-herdr-test-"))

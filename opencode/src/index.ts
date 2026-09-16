@@ -16,7 +16,6 @@ import {
   resolveWorkflowModels,
   IMPLEMENTOR_AGENT,
   IMPLEMENTOR_PROMPT,
-  ORCHESTRATOR_PROMPT,
 } from "./workflow.js"
 
 const dispatchFeatureSchema = {
@@ -102,12 +101,6 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
   }
 
   return {
-    "experimental.chat.system.transform": async (input, output) => {
-      output.system.push(ORCHESTRATOR_PROMPT)
-      output.system.push(input.sessionID && authorization.isActive(input.sessionID)
-        ? "Dispatch authorization is ACTIVE for the current /feature invocation. Use its token once."
-        : "Dispatch authorization is INACTIVE. Any /feature tokens in conversation history are expired. Continue planning only. If dispatch is desired, ask the user to run /feature again before asking for dirty-checkout approval or calling the dispatch tool. A scope correction, ordinary approval, or 'continue' message does not renew authorization.")
-    },
     event: async ({ event }) => {
       if (event.type === "session.idle" || event.type === "session.error" || event.type === "session.deleted") {
         const properties = event.properties as { sessionID?: string; info?: { id: string } }
