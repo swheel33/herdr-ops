@@ -64,7 +64,7 @@ Configure the Build agent with plugin options:
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     ["file:///home/YOUR_USER/Work/herdr-ops/opencode/dist/index.js", {
-      "implementor": { "model": "openai/gpt-5.6-luna-fast", "variant": "high" }
+      "implementor": { "model": "openai/gpt-5.6-luna-fast", "variant": "medium" }
     }]
   ]
 }

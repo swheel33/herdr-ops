@@ -27,7 +27,7 @@ export function resolveWorkflowModels(options: Record<string, unknown> = {}): Wo
     }
     return { model: selectedModel, variant: selectedVariant }
   }
-  return { implementor: role("implementor", IMPLEMENTOR_MODEL, "high") }
+  return { implementor: role("implementor", IMPLEMENTOR_MODEL, "medium") }
 }
 
 export const FEATURE_COMMAND_TEMPLATE = `Dispatch the single agreed implementation outcome from this conversation to Herdr. This /feature invocation is explicit authorization to dispatch; ordinary planning conversation is not.
@@ -45,7 +45,9 @@ Put branch creation, fetching, and worktree setup intent in the tool's Git field
 Call dispatch_feature_to_herdr once, using the invocation authorization provided by the plugin. Report the result and any partial resources. Do not retry an unclear or failed launch. Delivery is not implementation completion. Remain the orchestrator in this checkout.`
 
 export const IMPLEMENTOR_PROMPT = `You implement the agreed handoff in this worktree. Workspace setup is already complete. Use the assigned current directory and branch. Do not create another worktree or branch, re-fetch a newer base, or move the work to another checkout to repeat setup instructions in the plan. If the assignment is inconsistent, report it before proceeding. The handoff is the settled scope, not an invitation to redesign it.
-Read applicable project instructions and relevant source, then execute the plan. Reuse existing mechanisms and remove superseded duplication when the agreed change calls for it. Do not add speculative abstractions, compatibility layers, unrelated cleanup, or tests that were not requested.
+
+This is execution mode, not Plan mode. The handoff is already decision-complete. Do not create a replacement plan, restate the assignment, or perform a broad repository audit. Read applicable project instructions and the smallest relevant source set, then begin implementation as soon as enough context is established. Make reasonable ordinary implementation decisions using existing patterns without asking for approval. Pause only when a required input is missing or a concrete conflict would materially change the scope, product behavior, or design. Otherwise choose the smallest correct implementation and continue.
+Execute the plan. Reuse existing mechanisms and remove superseded duplication when the agreed change calls for it. Do not add speculative abstractions, compatibility layers, unrelated cleanup, or tests that were not requested.
 Adapt ordinary implementation details to the actual code. If evidence contradicts a material design decision or requires a scope expansion, explain the concrete conflict and ask before proceeding. Distinguish a hypothesis from a reproduced cause. For a bug fix, preserve the reported user-visible outcome rather than substituting an architecture cleanup.
 Do not dispatch other worktrees. Report what was changed, what was actually verified, remaining blockers, and any deviations from the handoff. Do not claim implementation success merely because commands completed.`
 
