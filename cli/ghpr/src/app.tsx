@@ -1,11 +1,44 @@
-import { createCliRenderer, SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
+import { createCliRenderer, SyntaxStyle, type ScrollBoxRenderable, type TerminalColors } from "@opentui/core"
 import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
 import { execFile } from "node:child_process"
 import { addComment, aiReviewFeed, approvePR, commentFeed, loadActivity, loadChecks, loadPR, mergePR, setPRState, type Activity, type Check, type PR, type Ref, type Sections } from "./github"
 import { cleanMarkdown, commentPreview } from "./content"
 
-const syntax = SyntaxStyle.create()
+type Theme = {
+  text: string; muted: string; accent: string; green: string; red: string; yellow: string; panel: string
+}
+const fallbackTheme: Theme = { text: "default", muted: "default", accent: "blue", green: "green", red: "red", yellow: "yellow", panel: "black" }
+const ThemeContext = createContext(fallbackTheme)
+const SyntaxContext = createContext<SyntaxStyle | undefined>(undefined)
+function useTheme() { return useContext(ThemeContext) }
+function useSyntax() { return useContext(SyntaxContext) || SyntaxStyle.create() }
+function terminalTheme(colors?: TerminalColors): Theme {
+  const palette = colors?.palette || []
+  const foreground = colors?.defaultForeground || "default"
+  return {
+    text: foreground,
+    muted: palette[8] || foreground,
+    accent: palette[4] || "blue",
+    green: palette[2] || "green",
+    red: palette[1] || "red",
+    yellow: palette[3] || "yellow",
+    panel: palette[0] || colors?.defaultBackground || "black",
+  }
+}
+function syntaxFor(theme: Theme) {
+  return SyntaxStyle.fromStyles({
+    default: { fg: theme.text },
+    "markup.heading": { fg: theme.text, bold: true },
+    "markup.link": { fg: theme.accent, underline: true },
+    "markup.raw": { fg: theme.yellow },
+    "markup.strong": { bold: true },
+    "markup.italic": { italic: true },
+    comment: { fg: theme.muted },
+    keyword: { fg: theme.accent },
+    string: { fg: theme.green },
+  })
+}
 
 function age(date: string) {
   const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(date)) / 60_000))
@@ -19,12 +52,14 @@ function status(state: string): string {
   return "●"
 }
 function Link({ url, children }: { url?: string; children: ReactNode }) {
-  return <text selectable={false} wrapMode="word">{url ? <span link={{ url }}>{children} ↗</span> : children}</text>
+  const theme = useTheme()
+  return <text selectable={false} fg={theme.accent} wrapMode="word">{url ? <span link={{ url }}>{children} ↗</span> : children}</text>
 }
 function ActionButton({ label, onClick, disabled = false }: { label: string; onClick: () => void; disabled?: boolean }) {
+  const theme = useTheme()
   return <box border borderStyle="single" paddingX={1} flexShrink={0} onMouseUp={e => {
     if (!disabled && e.button === 0 && !e.isDragging) onClick()
-  }}><text selectable={false}>{label}</text></box>
+  }}><text selectable={false} fg={disabled ? theme.muted : theme.accent}>{label}</text></box>
 }
 function entryId(id: string) {
   return `entry-${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`
@@ -45,42 +80,47 @@ function linkKey(raw: string, base: string) {
   }
 }
 function Markdown({ body }: { body: string }) {
+  const theme = useTheme()
+  const syntax = useSyntax()
   const content = cleanMarkdown(body)
-  return <markdown content={content} syntaxStyle={syntax} conceal
+  return <markdown content={content} syntaxStyle={syntax} fg={theme.text} conceal
     tableOptions={{ style: "columns", wrapMode: "word", columnFitter: "proportional", borders: false }} />
 }
 function Section({ title, children, count, defaultOpen = true, reveal = 0 }: { title: string; children: ReactNode; count?: number | string; defaultOpen?: boolean; reveal?: number }) {
+  const theme = useTheme()
   const [open, setOpen] = useState(defaultOpen)
   const shortcut = ["Description", "AI Reviews", "Comments", "Checks"].indexOf(title) + 1
   useEffect(() => { if (reveal > 0) setOpen(true) }, [reveal])
   useKeyboard(key => { if (key.name === String(shortcut)) setOpen(value => !value) })
   return <box flexDirection="column" flexShrink={0} marginBottom={1}>
-    <text selectable={false} marginBottom={1} onMouseUp={e => {
+    <text selectable={false} fg={theme.muted} marginBottom={1} onMouseUp={e => {
       if (e.button === 0 && !e.isDragging) setOpen(!open)
     }}>{open ? "▾" : "▸"} {title}{count === undefined ? "" : ` · ${count}`}</text>
     {open && children}
   </box>
 }
 function Entry({ item, defaultOpen = false, summary = false, focusedId }: { item: Activity; defaultOpen?: boolean; summary?: boolean; focusedId?: string }) {
+  const theme = useTheme()
   const [expanded, setExpanded] = useState(defaultOpen)
   const [showCode, setShowCode] = useState(false)
   const hasBody = Boolean(item.body || item.replies?.length)
+  const focused = focusedId === item.id
   useEffect(() => { if (containsEntry(item, focusedId)) setExpanded(true) }, [focusedId, item])
-  return <box id={entryId(item.id)} flexDirection="column" flexShrink={0} marginBottom={1} paddingLeft={hasBody ? 1 : 0}>
+  return <box id={entryId(item.id)} flexDirection="column" flexShrink={0} marginBottom={1} paddingLeft={hasBody ? 1 : 0} backgroundColor={focused ? theme.panel : undefined}>
     <text selectable={false} wrapMode="word" onMouseUp={e => {
       if (hasBody && e.button === 0 && !e.isDragging) setExpanded(!expanded)
-    }}>{hasBody ? (expanded ? "▾ " : "▸ ") : "· "}{item.author} {summary ? "summary · pinned" : item.action} · {age(item.date)}{item.replies?.length ? ` · ${item.replies.length} replies` : ""}</text>
-    {item.context && <text wrapMode="word">{item.context}</text>}
-    {!expanded && item.body && <text selectable={false} wrapMode="word" onMouseUp={e => {
+    }}><span fg={theme.text}>{hasBody ? (expanded ? "▾ " : "▸ ") : "· "}{item.author}</span> <span fg={theme.muted}>{summary ? "summary · pinned" : item.action} · {age(item.date)}{item.replies?.length ? ` · ${item.replies.length} replies` : ""}</span></text>
+    {item.context && <text fg={theme.yellow} wrapMode="word">{item.context}</text>}
+    {!expanded && item.body && <text selectable={false} fg={theme.muted} wrapMode="word" onMouseUp={e => {
       if (e.button === 0 && !e.isDragging) setExpanded(true)
     }}>{commentPreview(item.body)}</text>}
     {expanded && hasBody && <box flexDirection="column" marginTop={1} gap={1}>
       {item.body && <Markdown body={item.body} />}
-      {item.reactions && <text>{item.reactions}</text>}
-      {item.code && <text selectable={false} onMouseUp={e => {
+      {item.reactions && <text fg={theme.muted}>{item.reactions}</text>}
+      {item.code && <text selectable={false} fg={theme.accent} onMouseUp={e => {
         if (e.button === 0 && !e.isDragging) setShowCode(v => !v)
       }}>{showCode ? "▾ Hide" : "▸ Show"} diff context</text>}
-      {showCode && <text wrapMode="word">{item.code}</text>}
+      {showCode && <text fg={theme.muted} wrapMode="word">{item.code}</text>}
       {item.replies?.map(reply => <Entry key={reply.id} item={reply} defaultOpen focusedId={focusedId} />)}
       <Link url={item.url}>View on GitHub</Link>
     </box>}
@@ -94,11 +134,13 @@ function checkGroup(check: Check) {
   return "pending"
 }
 function Checks({ items }: { items: Check[] }) {
+  const theme = useTheme()
   const [showPassing, setShowPassing] = useState(false)
   const [showOther, setShowOther] = useState(false)
   const row = (c: Check) => {
     const icon = status(c.state)
-    return <text key={c.id} selectable={false} wrapMode="word">{icon} {c.name} <span>· {c.state.replaceAll("_", " ")}</span>{c.url && <span link={{ url: c.url }}> · Details ↗</span>}</text>
+    const fg = checkGroup(c) === "failed" ? theme.red : checkGroup(c) === "passed" ? theme.green : checkGroup(c) === "pending" ? theme.yellow : theme.muted
+    return <text key={c.id} selectable={false} fg={fg} wrapMode="word">{icon} {c.name} <span fg={theme.muted}>· {c.state.replaceAll("_", " ")}</span>{c.url && <span fg={theme.accent} link={{ url: c.url }}> · Details ↗</span>}</text>
   }
   return <box flexDirection="column">
     {items.filter(c => checkGroup(c) === "failed").map(row)}
@@ -117,6 +159,7 @@ function Checks({ items }: { items: Check[] }) {
 }
 
 export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
+  const theme = useTheme()
   const renderer = useRenderer()
   const { width, height } = useTerminalDimensions()
   const scroll = useRef<ScrollBoxRenderable>(null)
@@ -258,9 +301,9 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
     }
   })
   const hint = (key: keyof Sections) => errors[key]
-    ? <text wrapMode="word">{data[key] ? "Showing previous data. " : ""}{errors[key]}</text>
-    : !data[key] ? <text>Loading…</text>
-    : !data[key]?.length ? <text>Nothing reported.</text> : null
+    ? <text fg={theme.yellow} wrapMode="word">{data[key] ? "Showing previous data. " : ""}{errors[key]}</text>
+    : !data[key] ? <text fg={theme.muted}>Loading…</text>
+    : !data[key]?.length ? <text fg={theme.muted}>Nothing reported.</text> : null
   const state = pr?.merged ? "Merged" : pr?.draft ? "Draft" : pr?.state === "closed" ? "Closed" : "Open"
   const { summary, comments } = commentFeed(data.activity || [])
   const aiReviews = aiReviewFeed(data.activity || [])
@@ -304,22 +347,22 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
     setFocusSection(undefined)
     if (e.isDragging || renderer.getSelection()?.getSelectedText()) return
   }}>
-    <box paddingX={2} paddingY={1} flexShrink={0} flexDirection="column">
+    <box paddingX={2} paddingY={1} flexShrink={0} backgroundColor={theme.panel} flexDirection="column">
       <Link url={reference.url}>{reference.repo} · #{reference.number}</Link>
       <text wrapMode="word"><strong>{pr?.title || "Loading pull request…"}</strong></text>
-      {pr && <text wrapMode="word">{state} · @{pr.user.login} · {pr.head.ref} → {pr.base.ref}</text>}
-      {pr && <text wrapMode="word">{pr.changed_files.toLocaleString()} files changed · +{pr.additions.toLocaleString()} / −{pr.deletions.toLocaleString()} · {pr.commits} commits</text>}
+      {pr && <text fg={theme.muted} wrapMode="word"><span fg={state === "Open" ? theme.green : theme.yellow}>{state}</span> · @{pr.user.login} · {pr.head.ref} → {pr.base.ref}</text>}
+      {pr && <text fg={theme.muted} wrapMode="word">{pr.changed_files.toLocaleString()} files changed · <span fg={theme.green}>+{pr.additions.toLocaleString()}</span> / <span fg={theme.red}>−{pr.deletions.toLocaleString()}</span> · {pr.commits} commits</text>}
     </box>
     <scrollbox ref={scroll} focused flexGrow={1} scrollX={false} contentOptions={{ paddingX: width < 60 ? 1 : 2, paddingTop: 1 }}>
-      {errors.PR && <text marginBottom={1} wrapMode="word">{errors.PR}</text>}
-      {help && <box padding={1} marginBottom={1}>
-        <text wrapMode="word">Scroll: arrows, j/k, Page Up/Down, mouse wheel. g/G: top/bottom. 1: description. 2: AI reviews. 3: comments. 4: checks. Click comment headings or previews to expand; click check groups and diff context to expand. Click links to open. Use the action buttons below for PR actions. Merge and close follow a y/N confirmation prompt. m: older comments. r: refresh. o: GitHub. y: copy PR URL. h: help. q: quit.</text>
+      {errors.PR && <text fg={theme.red} marginBottom={1} wrapMode="word">{errors.PR}</text>}
+      {help && <box padding={1} marginBottom={1} backgroundColor={theme.panel}>
+        <text fg={theme.text} wrapMode="word">Scroll: arrows, j/k, Page Up/Down, mouse wheel. g/G: top/bottom. 1: description. 2: AI reviews. 3: comments. 4: checks. Click comment headings or previews to expand; click check groups and diff context to expand. Click links to open. Use the action buttons below for PR actions. Merge and close follow a y/N confirmation prompt. m: older comments. r: refresh. o: GitHub. y: copy PR URL. h: help. q: quit.</text>
       </box>}
       {pr && <>
         <Section title="Description"><Markdown body={pr.body || "_No description provided._"} /></Section>
         {aiReviews.length > 0 && <Section title="AI Reviews" count={aiReviews.length} reveal={focusSection === "AI Reviews" ? focusVersion : 0}>
           {aiReviews.map(review => <box key={review.provider.id} flexDirection="column" marginBottom={1}>
-            <text selectable={false} wrapMode="word"><strong>{review.provider.name}</strong>{review.summary ? " · summary" : " · review"}</text>
+            <text selectable={false} fg={theme.accent} wrapMode="word"><strong>{review.provider.name}</strong>{review.summary ? " · summary" : " · review"}</text>
             {review.summary && <Entry item={review.summary} defaultOpen summary focusedId={focusedComment} />}
             {review.comments.map(item => <Entry key={item.id} item={item} focusedId={focusedComment} />)}
           </box>)}
@@ -327,10 +370,10 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
         <Section title="Comments" defaultOpen={false} count={data.activity ? comments.length + (summary ? 1 : 0) : undefined} reveal={focusSection === "Comments" ? focusVersion : 0}>
           {hint("activity")}
           {summary && <Entry key={summary.id} item={summary} defaultOpen summary focusedId={focusedComment} />}
-          {reviews.filter(review => !review.body?.trim()).map(review => <text key={review.author} wrapMode="word">{review.author} · {review.action}</text>)}
-          {data.activity && !summary && !comments.length && !!data.activity.length && <text>No comments.</text>}
+          {reviews.filter(review => !review.body?.trim()).map(review => <text key={review.author} fg={review.action === "approved" ? theme.green : theme.yellow} wrapMode="word">{review.author} · {review.action}</text>)}
+          {data.activity && !summary && !comments.length && !!data.activity.length && <text fg={theme.muted}>No comments.</text>}
           {comments.slice(0, shown).map(item => <Entry key={item.id} item={item} focusedId={focusedComment} />)}
-          {comments.length > shown && <text selectable={false} onMouseUp={e => { if (e.button === 0) setShown(v => v + 30) }}>Show older comments · click or press m</text>}
+          {comments.length > shown && <text selectable={false} fg={theme.accent} onMouseUp={e => { if (e.button === 0) setShown(v => v + 30) }}>Show older comments · click or press m</text>}
         </Section>
         <Section title="Checks" count={checkCounts || undefined}>
           {hint("checks")}
@@ -338,12 +381,12 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
         </Section>
       </>}
     </scrollbox>
-    {pr && !demo && <box paddingX={1} flexShrink={0} flexDirection="column">
+    {pr && !demo && <box paddingX={1} flexShrink={0} backgroundColor={theme.panel} flexDirection="column">
       {commenting ? <box flexDirection="row" gap={1}>
-        <text>Comment:</text>
+        <text fg={theme.text}>Comment:</text>
         <input focused flexGrow={1} value={commentText} placeholder="Write a comment and press Enter" onInput={setCommentText} onSubmit={submitCommentInput} />
-        <text selectable={false}>Esc cancel</text>
-      </box> : confirmAction ? <text wrapMode="word"><strong>Confirm {confirmAction === "merge" ? "squash merge" : `${confirmAction} pull request`}</strong>? Type y to confirm or n to cancel.</text> : <box flexDirection="row" gap={1}>
+        <text selectable={false} fg={theme.muted}>Esc cancel</text>
+      </box> : confirmAction ? <text wrapMode="word" fg={theme.yellow}><strong>Confirm {confirmAction === "merge" ? "squash merge" : `${confirmAction} pull request`}</strong>? Type y to confirm or n to cancel.</text> : <box flexDirection="row" gap={1}>
         <ActionButton label="Comment" onClick={startComment} disabled={actionBusy} />
         <ActionButton label="Approve" onClick={() => void performAction("approve")} disabled={actionBusy || pr.state !== "open" || pr.merged} />
         <ActionButton label="Merge (squash)" onClick={() => requestAction("merge")} disabled={actionBusy || pr.state !== "open" || pr.merged || pr.draft} />
@@ -352,13 +395,21 @@ export function App({ reference, demo }: { reference: Ref; demo: boolean }) {
           : <ActionButton label="Close" onClick={() => requestAction("close")} disabled={actionBusy || pr.state !== "open" || pr.merged} />}
       </box>}
     </box>}
-    <box paddingX={1} flexShrink={0}>
-      <text wrapMode="word">{notice || (loading ? "Refreshing…" : `Updated ${updated}`)} · r refresh · o GitHub · h help · q quit</text>
+    <box paddingX={1} flexShrink={0} backgroundColor={theme.panel}>
+      <text fg={theme.muted} wrapMode="word">{notice || (loading ? "Refreshing…" : `Updated ${updated}`)} · r refresh · o GitHub · h help · q quit</text>
     </box>
   </box>
 }
 
 export async function start(reference: Ref, demo = false) {
   const renderer = await createCliRenderer({ exitOnCtrlC: false, useMouse: true, onDestroy: () => process.exit(0) })
-  createRoot(renderer).render(<App reference={reference} demo={demo} />)
+  const theme = terminalTheme(await renderer.getPalette().catch(() => undefined))
+  const syntax = syntaxFor(theme)
+  createRoot(renderer).render(
+    <ThemeContext.Provider value={theme}>
+      <SyntaxContext.Provider value={syntax}>
+        <App reference={reference} demo={demo} />
+      </SyntaxContext.Provider>
+    </ThemeContext.Provider>,
+  )
 }
