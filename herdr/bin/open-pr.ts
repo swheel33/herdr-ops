@@ -9,6 +9,7 @@ const root = resolve(import.meta.dir, "..")
 const context = JSON.parse(process.env.HERDR_PLUGIN_CONTEXT_JSON ?? "{}")
 const cwd = context.worktree?.checkout_path ?? context.workspace_cwd
 const noPullRequestMessage = "No pull request found for the current branch."
+const noRepositoryMessage = "No GitHub repository is configured for the current workspace."
 function errorMessage(error: any): string {
   return error.stderr?.toString().trim() || error.message || String(error)
 }
@@ -26,7 +27,21 @@ function api(args: string[]): any {
 }
 
 try {
-  if (process.argv[2] === "pane") {
+  if (process.argv[2] === "error") {
+    const message = process.env.HERDR_OPS_PR_ERROR || "Unable to open the pull request."
+    console.log("")
+    console.log("Pull request unavailable")
+    console.log("")
+    console.log(message)
+    console.log("")
+    console.log("Press any key to close.")
+    if (process.stdin.isTTY) process.stdin.setRawMode(true)
+    process.stdin.resume()
+    process.stdin.once("data", () => {
+      if (process.stdin.isTTY) process.stdin.setRawMode(false)
+      process.exit(0)
+    })
+  } else if (process.argv[2] === "pane") {
     const url = process.env.HERDR_OPS_PR_URL
     if (!url) throw new Error("Missing PR URL")
     const result = spawnSync("bun", [resolve(root, "../cli/ghpr/src/cli.tsx"), url], { stdio: "inherit" })
@@ -37,7 +52,9 @@ try {
     try {
       pr = command("gh", ["pr", "view", "--json", "url"], cwd)
     } catch (error) {
-      if (/no pull requests? found/i.test(errorMessage(error))) throw new Error(noPullRequestMessage)
+      const message = errorMessage(error)
+      if (/no pull requests? found/i.test(message)) throw new Error(noPullRequestMessage)
+      if (/no git remotes found/i.test(message)) throw new Error(noRepositoryMessage)
       throw error
     }
     if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/[1-9]\d*$/.test(pr.url)) throw new Error(noPullRequestMessage)
@@ -81,9 +98,9 @@ try {
 } catch (error: any) {
   const message = errorMessage(error)
   console.error(`herdr-pr: ${message}`)
-  if (process.argv[2] !== "pane") {
-    const title = message === noPullRequestMessage ? "Pull request unavailable" : "Pull request"
-    try { api(["notification", "show", title, "--body", message]) } catch {}
+  if (process.argv[2] !== "pane" && context.workspace_id) {
+    try { api(["plugin", "pane", "open", "--plugin", "herdr-ops.pr", "--entrypoint", "error",
+      "--placement", "popup", "--workspace", context.workspace_id, "--env", `HERDR_OPS_PR_ERROR=${message}`, "--focus"]) } catch {}
   }
   process.exitCode = 1
 }
