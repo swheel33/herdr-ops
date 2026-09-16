@@ -1,0 +1,22 @@
+{
+  "name": "ghpr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "ghpr": "bin/ghpr" },
+  "scripts": {
+    "dev": "bun src/cli.tsx",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/cli.tsx --target=bun --packages=external --outdir=dist"
+  },
+  "dependencies": {
+    "@opentui/core": "0.5.11",
+    "@opentui/react": "0.5.11",
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.0",
+    "typescript": "^5.9.3"
+  }
+}

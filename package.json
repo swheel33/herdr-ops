@@ -1,0 +1,9 @@
+{
+  "name": "herdr-ops",
+  "private": true,
+  "scripts": {
+    "setup": "bun install --cwd cli/ghpr --frozen-lockfile && npm ci --prefix opencode",
+    "typecheck": "bun run --cwd cli/ghpr typecheck && npm run --prefix opencode typecheck && cli/ghpr/node_modules/.bin/tsc --noEmit --strict --skipLibCheck --module esnext --moduleResolution bundler --target esnext --typeRoots cli/ghpr/node_modules/@types --types bun herdr/bin/open-pr.ts",
+    "build": "bun run --cwd cli/ghpr build && npm run --prefix opencode build"
+  }
+}
