@@ -127,7 +127,7 @@ enabled = false
 rows = [
   ["workspace"],
   [
-    { token = "branch", dim = true },
+    { token = "$pr_branch", dim = true },
     { token = "$pr_open", fg = "#3fb950", bold = true },
     { token = "$pr_draft", fg = "#d29922", bold = true },
     { token = "$pr_merged", fg = "#a371f7", bold = true },

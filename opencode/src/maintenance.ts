@@ -175,6 +175,7 @@ export class RepositoryMaintenance {
         const status = pr?.state === "MERGED" ? "merged" : pr?.state === "CLOSED" ? "closed"
           : pr?.isDraft === true ? "draft" : "open"
         const tokens: Record<string, string> = {}
+        if (branch) tokens.pr_branch = branch
         if (valid) tokens[`pr_${status}`] = `#${pr.number}`
         const args = ["workspace", "report-metadata", worktree.openWorkspaceId,
           "--source", "herdr-ops.pr", "--ttl-ms", "1800000"]
