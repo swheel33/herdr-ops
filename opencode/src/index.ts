@@ -5,6 +5,7 @@ import { tool, type Plugin } from "@opencode-ai/plugin"
 
 import { HerdrDispatcher, formatDispatchResult } from "./dispatch.js"
 import { DispatchError } from "./errors.js"
+import { RepositoryMaintenance } from "./maintenance.js"
 import { NodeCommandRunner } from "./process.js"
 import { isLinkedWorktree, resolveRepository } from "./validation.js"
 import {
@@ -52,7 +53,19 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
   }
 
   const dispatcher = new HerdrDispatcher({ runner, realpath, logger }, models.implementor.model)
+  let maintenance: RepositoryMaintenance | undefined
+  try {
+    const repository = await resolveRepository(runner, directory, realpath)
+    maintenance = new RepositoryMaintenance(runner, repository.root, repository.commonDir, logger)
+    maintenance.start()
+  } catch (error) {
+    logger("debug", "Repository maintenance is unavailable outside a primary Git checkout", {
+      directory,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
   return {
+    dispose: async () => maintenance?.dispose(),
     event: async ({ event }) => {
       if (event.type !== "session.idle" && event.type !== "session.error" && event.type !== "session.deleted") return
       const properties = event.properties as { sessionID?: string; info?: { id: string } }

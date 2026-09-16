@@ -11,6 +11,7 @@ The plugin intentionally handles one workflow:
 3. It starts one Build agent in a 70/30 agent and shell layout.
 4. It delivers the plan and waits for the agent to begin working.
 5. It reports `dispatched` only after that working state is confirmed.
+6. It periodically refreshes pull-request metadata, safely advances local `develop`, and removes only clean, inactive worktrees for closed or merged pull requests.
 
 Batch dispatches and existing-branch continuation are outside this plugin's scope.
 
@@ -91,3 +92,5 @@ npm run test:e2e
 ```
 
 The E2E workflow creates a disposable repository, worktree, pane, and Build agent and may incur model usage. Set `E2E_MODEL=provider/model-id` or `E2E_TIMEOUT_MS=<milliseconds>` when needed.
+
+Repository maintenance runs immediately and every five minutes. PR sidebar metadata is reported with a two-hour TTL. Cleanup skips dirty worktrees and workspaces with active agents, and never uses forced worktree removal.

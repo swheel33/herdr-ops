@@ -4,7 +4,7 @@ Small, host-specific tools for Herdr-based coding workspaces.
 
 ## Components
 
-- `opencode/`: OpenCode workflow and one-feature Herdr dispatch.
+- `opencode/`: OpenCode workflow, one-feature Herdr dispatch, and safe pull-request worktree maintenance.
 - `herdr/`: small Herdr adapter for an on-demand `ghpr` split pane.
 - `cli/ghpr/`: standalone GitHub pull request viewer built with Bun, React, and OpenTUI.
 
@@ -12,7 +12,7 @@ The tools are intentionally separate packages. They share one repository without
 
 ## Local Setup
 
-The OpenCode plugin owns the feature handoff only. The Herdr adapter has no timers.
+The OpenCode plugin owns the feature handoff and repository maintenance. The Herdr adapter has no timers.
 For SSH, install and register these components on the host owning the checkout.
 
 Original Git histories are retained in local `archive/dispatch/*` and

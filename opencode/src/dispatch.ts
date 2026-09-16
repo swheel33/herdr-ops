@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, realpath } from "node:fs/promises"
+import { realpath } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
-import { lock } from "proper-lockfile"
-
 import { CommandError, DispatchError } from "./errors.js"
 import { NodeCommandRunner } from "./process.js"
+import { withRepositoryLock } from "./repository-lock.js"
 import { IMPLEMENTOR_AGENT, IMPLEMENTOR_MODEL } from "./workflow.js"
 import type {
   CommandSpec,
@@ -22,7 +21,6 @@ import { resolveRepository, validateDispatchInput, type ValidatedDispatchInput }
 const inFlight = new Set<string>()
 const SHELL_READY_RETRY_MS = 100
 const SHELL_READY_TIMEOUT_MS = 5_000
-const DISPATCH_LOCK_STALE_MS = 30 * 60 * 1_000
 
 function createAgentName(branch: string): string {
   const branchPart = branch
@@ -36,6 +34,43 @@ function createAgentName(branch: string): string {
 
 function optionalString(...values: unknown[]): string | undefined {
   return values.find((value): value is string => typeof value === "string" && value.length > 0)
+}
+
+export interface ExistingWorktreeInfo {
+  path: string
+  branch?: string
+  openWorkspaceId?: string
+  isLinkedWorktree?: boolean
+}
+
+export function parseWorktreeListResult(stdout: string): ExistingWorktreeInfo[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch (error) {
+    throw new DispatchError("Herdr worktree listing returned malformed JSON.", { cause: error })
+  }
+
+  const worktrees = (parsed as { result?: { worktrees?: unknown } }).result?.worktrees
+  if (!Array.isArray(worktrees)) {
+    throw new DispatchError("Herdr worktree listing did not include result.worktrees.")
+  }
+
+  return worktrees.flatMap((entry): ExistingWorktreeInfo[] => {
+    if (typeof entry !== "object" || entry === null) return []
+    const value = entry as Record<string, unknown>
+    if (typeof value.path !== "string") return []
+    return [{
+      path: value.path,
+      ...(typeof value.branch === "string" ? { branch: value.branch } : {}),
+      ...(typeof value.open_workspace_id === "string"
+        ? { openWorkspaceId: value.open_workspace_id }
+        : {}),
+      ...(typeof value.is_linked_worktree === "boolean"
+        ? { isLinkedWorktree: value.is_linked_worktree }
+        : {}),
+    }]
+  })
 }
 
 export function parseWorktreeResult(stdout: string): WorktreeInfo {
@@ -204,30 +239,6 @@ async function commandSucceeds(dependencies: DispatchDependencies, command: Comm
   } catch (error) {
     if (error instanceof CommandError && error.result.exitCode === 1) return false
     throw error
-  }
-}
-
-async function withRepositoryLock<T>(commonDir: string, action: () => Promise<T>): Promise<T> {
-  const stateDirectory = path.join(commonDir, "opencode-herdr-dispatch")
-  const lockPath = path.join(stateDirectory, "dispatch")
-  await mkdir(stateDirectory, { recursive: true })
-  let release: (() => Promise<void>) | undefined
-  try {
-    release = await lock(lockPath, {
-      realpath: false,
-      retries: 0,
-      stale: DISPATCH_LOCK_STALE_MS,
-    })
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ELOCKED") {
-      throw new DispatchError("Another dispatch is allocating a worktree for this repository.")
-    }
-    throw error
-  }
-  try {
-    return await action()
-  } finally {
-    await release()
   }
 }
 
