@@ -21,6 +21,8 @@ import { resolveRepository, validateDispatchInput, type ValidatedDispatchInput }
 const inFlight = new Set<string>()
 const SHELL_READY_RETRY_MS = 100
 const SHELL_READY_TIMEOUT_MS = 5_000
+const PLAN_PROMPT_RETRY_MS = 1_000
+const PLAN_PROMPT_ATTEMPTS = 3
 
 function createAgentName(branch: string): string {
   const branchPart = branch
@@ -514,16 +516,23 @@ export class HerdrDispatcher {
     ].join("\n")
     const command: CommandSpec = {
       executable: "herdr",
-      args: ["agent", "prompt", agentName, plan],
+      args: ["agent", "prompt", agentName, plan, "--wait", "--until", "working", "--timeout", "60000"],
       cwd: repositoryRoot,
       redactArgs: [3],
       ...(signal ? { signal } : {}),
     }
-    try {
-      await this.dependencies.runner.run(command)
-    } catch (error) {
-      if (herdrErrorCode(error) !== "agent_prompt_stalled") throw new DispatchError(`The plan was not accepted by OpenCode.\n${error instanceof Error ? error.message : String(error)}`, { cause: error })
-      this.log("warn", "Herdr accepted the plan but prompt observation stalled; no retry will be attempted", { agentName })
+    for (let attempt = 1; attempt <= PLAN_PROMPT_ATTEMPTS; attempt += 1) {
+      try {
+        await this.dependencies.runner.run(command)
+        break
+      } catch (error) {
+        if (herdrErrorCode(error) !== "agent_prompt_stalled") throw new DispatchError(`The plan was not accepted by OpenCode.\n${error instanceof Error ? error.message : String(error)}`, { cause: error })
+        const state = await this.readAgentState(repositoryRoot, agentName, signal)
+        if (state.status === "working" || state.stateChangeSeq > stateBeforePlan.stateChangeSeq) break
+        if (attempt === PLAN_PROMPT_ATTEMPTS) throw new DispatchError("OpenCode did not admit the implementation plan after the agent became available. Inspect the existing agent before retrying; no retry was attempted.", { cause: error })
+        this.log("warn", "OpenCode was not ready to admit the plan; retrying prompt delivery", { agentName, attempt })
+        await delay(PLAN_PROMPT_RETRY_MS, undefined, signal ? { signal } : undefined)
+      }
     }
 
     try {
