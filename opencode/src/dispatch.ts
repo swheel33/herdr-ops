@@ -21,8 +21,6 @@ import { resolveRepository, validateDispatchInput, type ValidatedDispatchInput }
 const inFlight = new Set<string>()
 const SHELL_READY_RETRY_MS = 100
 const SHELL_READY_TIMEOUT_MS = 5_000
-const AGENT_SESSION_RETRY_MS = 250
-const AGENT_SESSION_TIMEOUT_MS = 60_000
 
 function createAgentName(branch: string): string {
   const branchPart = branch
@@ -227,7 +225,6 @@ function herdrErrorCode(error: unknown): string | undefined {
 interface AgentState {
   status: string
   stateChangeSeq: number
-  sessionId?: string
 }
 
 function parseAgentState(stdout: string): AgentState {
@@ -238,25 +235,12 @@ function parseAgentState(stdout: string): AgentState {
     throw new DispatchError("Herdr agent inspection returned malformed JSON.", { cause: error })
   }
   const agent = (parsed as {
-    result?: {
-      agent?: {
-        agent_status?: unknown
-        state_change_seq?: unknown
-        agent_session?: { value?: unknown }
-      }
-    }
+    result?: { agent?: { agent_status?: unknown; state_change_seq?: unknown } }
   }).result?.agent
   if (typeof agent?.agent_status !== "string" || typeof agent.state_change_seq !== "number") {
     throw new DispatchError("Herdr agent inspection did not include agent status and state-change sequence.")
   }
-  const sessionId = typeof agent.agent_session?.value === "string" && agent.agent_session.value.length > 0
-    ? agent.agent_session.value
-    : undefined
-  return {
-    status: agent.agent_status,
-    stateChangeSeq: agent.state_change_seq,
-    ...(sessionId ? { sessionId } : {}),
-  }
+  return { status: agent.agent_status, stateChangeSeq: agent.state_change_seq }
 }
 
 async function runStage(
@@ -460,21 +444,14 @@ export class HerdrDispatcher {
       cwd: repository.root,
       ...(signal ? { signal } : {}),
     })
-    this.log("info", "Build agent process started", {
+    this.log("info", "Build agent started", {
       agentName,
-      workspaceId: worktree.workspaceId,
-      branch: input.branch,
-    })
-
-    const stateBeforePlan = await waitForAgentSession(this.dependencies, repository.root, agentName, signal)
-    this.log("info", "Build agent session ready", {
-      agentName,
-      sessionId: stateBeforePlan.sessionId,
       workspaceId: worktree.workspaceId,
       branch: input.branch,
     })
 
     partial.phase = "plan"
+    const stateBeforePlan = await this.readAgentState(repository.root, agentName, signal)
     await this.deliverPlan(repository.root, worktree.path, input, base, agentName, stateBeforePlan, signal)
     this.log("info", "Implementation plan delivered", {
       agentName,
@@ -738,25 +715,6 @@ async function readAgentState(
     ...(signal ? { signal } : {}),
   }, "Could not inspect the Build agent state.")
   return parseAgentState(output)
-}
-
-async function waitForAgentSession(
-  dependencies: DispatchDependencies,
-  repositoryRoot: string,
-  agentName: string,
-  signal?: AbortSignal,
-): Promise<AgentState> {
-  const deadline = Date.now() + AGENT_SESSION_TIMEOUT_MS
-  while (true) {
-    const state = await readAgentState(dependencies, repositoryRoot, agentName, signal)
-    if (state.sessionId) return state
-    if (Date.now() >= deadline) {
-      throw new DispatchError(
-        `The OpenCode process started, but no session initialized within ${AGENT_SESSION_TIMEOUT_MS}ms. The implementation plan was not submitted.`,
-      )
-    }
-    await delay(AGENT_SESSION_RETRY_MS, undefined, signal ? { signal } : undefined)
-  }
 }
 
 export function formatDispatchResult(result: DispatchResult): string {
