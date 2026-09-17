@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { CommandError, DispatchError } from "./errors.js"
 import { NodeCommandRunner } from "./process.js"
 import { withRepositoryLock } from "./repository-lock.js"
-import { IMPLEMENTOR_AGENT, IMPLEMENTOR_MODEL } from "./workflow.js"
+import { IMPLEMENTOR_AGENT } from "./workflow.js"
 import type {
   CommandSpec,
   DispatchDependencies,
@@ -284,14 +284,13 @@ interface ResolvedBase {
 export class HerdrDispatcher {
   constructor(
     private readonly dependencies: DispatchDependencies = { runner: new NodeCommandRunner(), realpath },
-    private readonly implementationModel = IMPLEMENTOR_MODEL,
   ) {}
 
   private log(level: "debug" | "info" | "warn" | "error", message: string, metadata?: Record<string, unknown>): void {
     this.dependencies.logger?.(level, message, metadata)
   }
 
-  async dispatch(cwd: string, input: DispatchInput, signal?: AbortSignal): Promise<DispatchResult> {
+  async dispatch(cwd: string, input: DispatchInput, implementationModel: string, signal?: AbortSignal): Promise<DispatchResult> {
     this.log("info", "Dispatch requested", {
       cwd,
       title: input.title,
@@ -320,7 +319,7 @@ export class HerdrDispatcher {
       inFlight.add(key)
       partial = {}
       try {
-        return await this.dispatchNewBranch(repository, validated, partial, signal)
+        return await this.dispatchNewBranch(repository, validated, partial, implementationModel, signal)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         throw new DispatchError(
@@ -345,6 +344,7 @@ export class HerdrDispatcher {
     repository: RepositoryInfo,
     input: ValidatedDispatchInput,
     partial: DispatchPartialState,
+    implementationModel: string,
     signal?: AbortSignal,
   ): Promise<DispatchResult> {
     const rootState = await this.readRootState(repository.root, signal)
@@ -442,7 +442,7 @@ export class HerdrDispatcher {
     partial.agentName = agentName
     await this.startAgentWhenShellReady({
       executable: "herdr",
-      args: ["agent", "start", agentName, "--kind", "opencode", "--pane", worktree.paneId, "--timeout", "60000", "--", "--agent", IMPLEMENTOR_AGENT, "--model", this.implementationModel, "--auto"],
+      args: ["agent", "start", agentName, "--kind", "opencode", "--pane", worktree.paneId, "--timeout", "60000", "--", "--agent", IMPLEMENTOR_AGENT, "--model", implementationModel, "--auto"],
       cwd: repository.root,
       ...(signal ? { signal } : {}),
     })

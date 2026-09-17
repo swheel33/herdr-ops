@@ -14,12 +14,13 @@ import {
   FeatureAuthorization,
   IMPLEMENTOR_AGENT,
   IMPLEMENTOR_PROMPT,
-  resolveWorkflowModels,
+  IMPLEMENTOR_VARIANT,
 } from "./workflow.js"
 
-const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) => {
-  const models = resolveWorkflowModels(options)
+const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
   const authorization = new FeatureAuthorization()
+  const sessionModels = new Map<string, string>()
+  let configuredModel: string | undefined
   const runner = new NodeCommandRunner()
   const logger = (
     level: "debug" | "info" | "warn" | "error",
@@ -40,7 +41,7 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
   const linkedWorktree = await isLinkedWorktree(runner, directory, realpath)
   if (linkedWorktree) {
     return {
-      config: async (config) => configureFeatureWorkflow(config, true, models),
+      config: async (config) => configureFeatureWorkflow(config, true),
       "experimental.chat.system.transform": async (_input, output) => {
         output.system.push(`${IMPLEMENTOR_PROMPT}\nAssigned working directory: ${directory}`)
       },
@@ -48,7 +49,7 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
         if (input.agent === IMPLEMENTOR_AGENT && output.parts.some(
           (part) => part.type === "text" && part.text.startsWith("Herdr implementation assignment:"),
         )) {
-          Object.assign(output.message, { variant: models.implementor.variant })
+          Object.assign(output.message, { variant: IMPLEMENTOR_VARIANT })
         }
       },
       event: async ({ event }) => titleSynchronizer.handle(event),
@@ -56,7 +57,7 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
     }
   }
 
-  const dispatcher = new HerdrDispatcher({ runner, realpath, logger }, models.implementor.model)
+  const dispatcher = new HerdrDispatcher({ runner, realpath, logger })
   let maintenance: RepositoryMaintenance | undefined
   try {
     const repository = await resolveRepository(runner, directory, realpath)
@@ -73,7 +74,10 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
       if (event.type === "session.idle" || event.type === "session.error" || event.type === "session.deleted") {
         const properties = event.properties as { sessionID?: string; info?: { id: string } }
         const sessionID = properties.sessionID ?? properties.info?.id
-        if (sessionID) authorization.clear(sessionID)
+        if (sessionID) {
+          authorization.clear(sessionID)
+          sessionModels.delete(sessionID)
+        }
       }
       await titleSynchronizer.handle(event)
     },
@@ -83,8 +87,12 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
         maintenance?.dispose() ?? Promise.resolve(),
       ])
     },
-    config: async (config) => configureFeatureWorkflow(config, false, models),
+    config: async (config) => {
+      configuredModel = config.model
+      configureFeatureWorkflow(config, false)
+    },
     "chat.message": async (input, output) => {
+      if (input.model) sessionModels.set(input.sessionID, `${input.model.providerID}/${input.model.modelID}`)
       authorization.bind(
         input.sessionID,
         output.message.id,
@@ -138,6 +146,11 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
           const latestUser = [...messages.data].reverse().find((message) => message.info.role === "user")
           authorization.consume(context.sessionID, args.authorization, latestUser?.info.id ?? "")
 
+          const implementationModel = sessionModels.get(context.sessionID) ?? configuredModel
+          if (!implementationModel) {
+            throw new DispatchError("Could not determine the active orchestrator model for this dispatch.")
+          }
+
           const repository = await resolveRepository(runner, context.directory, realpath, context.abort)
           const receiptDirectory = path.join(repository.commonDir, "opencode-herdr-dispatch")
           const receiptPath = path.join(receiptDirectory, "handoffs.jsonl")
@@ -152,7 +165,7 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
           }
           await appendFile(receiptPath, `${JSON.stringify({ id: receiptID, state: "requested", time: new Date().toISOString(), sessionID: context.sessionID, input })}\n`, { mode: 0o600 })
           try {
-            const result = await dispatcher.dispatch(context.directory, input, context.abort)
+            const result = await dispatcher.dispatch(context.directory, input, implementationModel, context.abort)
             await appendFile(receiptPath, `${JSON.stringify({ id: receiptID, state: "completed", time: new Date().toISOString(), result })}\n`, { mode: 0o600 })
             return `${formatDispatchResult(result)}\nDispatch receipt: ${receiptID}`
           } catch (error) {

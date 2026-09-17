@@ -2,33 +2,7 @@ import { randomUUID } from "node:crypto"
 import type { Config } from "@opencode-ai/plugin"
 
 export const IMPLEMENTOR_AGENT = "build"
-export const IMPLEMENTOR_MODEL = "openai/gpt-5.6-luna-fast"
-
-export interface WorkflowModels {
-  implementor: { model: string; variant: string }
-}
-
-export function resolveWorkflowModels(options: Record<string, unknown> = {}): WorkflowModels {
-  const role = (name: string, model: string, variant: string) => {
-    const value = options[name]
-    if (value === undefined) return { model, variant }
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      throw new Error(`${name} must be an object with model and optional variant.`)
-    }
-    const settings = value as Record<string, unknown>
-    const selectedModel = settings.model ?? model
-    // A different model must not inherit a model-specific reasoning variant.
-    const selectedVariant = settings.variant ?? (selectedModel === model ? variant : "default")
-    if (typeof selectedModel !== "string" || !/^[^\s/]+\/\S+$/.test(selectedModel)) {
-      throw new Error(`${name}.model must be a provider/model identifier.`)
-    }
-    if (typeof selectedVariant !== "string" || !selectedVariant.trim()) {
-      throw new Error(`${name}.variant must be a nonempty string.`)
-    }
-    return { model: selectedModel, variant: selectedVariant }
-  }
-  return { implementor: role("implementor", IMPLEMENTOR_MODEL, "medium") }
-}
+export const IMPLEMENTOR_VARIANT = "medium"
 
 export const FEATURE_COMMAND_TEMPLATE = `Dispatch the single agreed implementation outcome from this conversation to Herdr. This /feature invocation is explicit authorization to dispatch; ordinary planning conversation is not.
 
@@ -40,7 +14,7 @@ If no implementation-ready scope exists, or a material product/design decision r
 
 Read applicable project instructions. Ask about concrete conflicts with the agreed plan. Inspect Git metadata with inspect_herdr_repository before dispatch. Dispatch one new branch from a freshly fetched origin default unless another base is explicitly requested. A primary checkout branch such as develop/main is a base, not a dispatch target. Dirty-root approval does not copy uncommitted files; explain this and obtain explicit approval when needed.
 
-Put branch creation, fetching, and worktree setup intent in the tool's Git fields, not as tasks in the implementation plan. The plugin completes that setup before the implementor receives the plan. Always launch the configured implementor; do not carry the orchestrator's current agent or model into the worktree.
+Put branch creation, fetching, and worktree setup intent in the tool's Git fields, not as tasks in the implementation plan. The plugin completes that setup before the implementor receives the plan. Always launch the implementor with the orchestrator session's active model; do not carry the orchestrator's current agent into the worktree.
 
 Call dispatch_feature_to_herdr once, using the invocation authorization provided by the plugin. Report the result and any partial resources. Do not retry an unclear or failed launch. Delivery is not implementation completion. Remain the orchestrator in this checkout.`
 
@@ -86,7 +60,7 @@ export class FeatureAuthorization {
   }
 }
 
-export function configureFeatureWorkflow(config: Config, linkedWorktree = false, models = resolveWorkflowModels()): void {
+export function configureFeatureWorkflow(config: Config, linkedWorktree = false): void {
   config.agent ??= {}
   // Retire legacy file/inline registrations as well as the old runtime agent.
   config.agent["herdr-feature-coordinator"] = { disable: true }
@@ -95,7 +69,6 @@ export function configureFeatureWorkflow(config: Config, linkedWorktree = false,
   if (linkedWorktree) {
     config.agent.build = {
       ...config.agent.build,
-      ...models.implementor,
       permission: {
         ...config.agent.build?.permission,
         dispatch_feature_to_herdr: "deny",

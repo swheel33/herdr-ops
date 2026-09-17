@@ -55,20 +55,12 @@ Register the resulting `dist/index.js` in `~/.config/opencode/opencode.json` usi
 
 The plugin registers `/feature`, its Build-agent settings, and its dispatch tool at runtime. Do not install a separate command file or agent definition.
 
-## Model Configuration
+## Model Selection
 
-Configure the Build agent with plugin options:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["file:///home/YOUR_USER/Work/herdr-ops/opencode/dist/index.js", {
-      "implementor": { "model": "openai/gpt-5.6-luna-fast", "variant": "medium" }
-    }]
-  ]
-}
-```
+The implementor inherits the active provider/model from the orchestrator session
+that invokes `/feature`. Different sessions can dispatch different models, and no
+separate implementor model setting is required. OpenCode's configured `model` is
+used as a fallback when the session does not provide one.
 
 ## Usage
 
