@@ -1,7 +1,7 @@
 id = "herdr-ops.pr"
 name = "Herdr PR"
 version = "0.1.0"
-min_herdr_version = "0.9.0"
+min_herdr_version = "0.9.1"
 description = "Show pull request metadata and open ghpr on demand."
 platforms = ["linux", "macos"]
 

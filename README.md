@@ -60,9 +60,9 @@ PR tokens are display-only. The pane is opened only by the configured keybinding
 
 ## Herdr Version
 
-This checkout expects Herdr `0.9.0`. Omarchy packages Herdr system-wide, but this machine uses the user-level mise override:
+This checkout expects Herdr `0.9.1`. Omarchy packages Herdr system-wide, but this machine uses the user-level mise override:
 
 ```sh
-mise use -g herdr@0.9.0
+mise use -g herdr@0.9.1
 herdr --version
 ```

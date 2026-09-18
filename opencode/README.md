@@ -20,7 +20,7 @@ Batch dispatches and existing-branch continuation are outside this plugin's scop
 ## Requirements
 
 - OpenCode V1
-- Herdr 0.9.0
+- Herdr 0.9.1
 - Herdr's OpenCode integration
 - Git
 - GitHub CLI (`gh`), authenticated for PR metadata maintenance
