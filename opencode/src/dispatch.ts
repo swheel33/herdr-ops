@@ -80,6 +80,7 @@ export interface ExistingWorktreeInfo {
   branch?: string
   openWorkspaceId?: string
   isLinkedWorktree?: boolean
+  isPrunable?: boolean
 }
 
 export function parseWorktreeListResult(stdout: string): ExistingWorktreeInfo[] {
@@ -107,6 +108,9 @@ export function parseWorktreeListResult(stdout: string): ExistingWorktreeInfo[] 
         : {}),
       ...(typeof value.is_linked_worktree === "boolean"
         ? { isLinkedWorktree: value.is_linked_worktree }
+        : {}),
+      ...(typeof value.is_prunable === "boolean"
+        ? { isPrunable: value.is_prunable }
         : {}),
     }]
   })
@@ -409,6 +413,7 @@ export class HerdrDispatcher {
       : undefined
     let pullRequest: ResolvedPullRequest | undefined
     let reusedWorktree = false
+    let reusedLocalBranch = false
     if (base) this.log("info", "Dispatch base resolved", { base: base.label, commit: base.commit })
     const worktree = await withRepositoryLock(repository.commonDir, async () => {
       if (input.mode === "pull_request") {
@@ -436,9 +441,11 @@ export class HerdrDispatcher {
         reusedWorktree = true
         await this.prepareExistingPullRequestWorktree(repository.root, existingWorktree, base.commit, signal)
       } else if (branchExists) {
-        throw new DispatchError(input.mode === "pull_request"
-          ? `Pull request branch ${JSON.stringify(branch)} already exists without a reusable linked worktree. Remove or open that checkout before retrying.`
-          : `Branch ${JSON.stringify(branch)} already exists. Choose a new branch.`)
+        if (input.mode !== "pull_request") {
+          throw new DispatchError(`Branch ${JSON.stringify(branch)} already exists. Choose a new branch.`)
+        }
+        reusedLocalBranch = true
+        await this.prepareExistingPullRequestBranch(repository.root, branch, base.commit, signal)
       }
       partial.phase = "workspace"
       this.log("info", existingWorktree
@@ -489,7 +496,7 @@ export class HerdrDispatcher {
     partial.paneId = worktree.paneId
     if (worktree.path) partial.path = worktree.path
     if (!worktree.path) throw new DispatchError("Herdr did not report the worktree path required for dispatch.")
-    await this.assertLinkedWorktree(repository, worktree.path, branch, reusedWorktree ? undefined : base.commit, signal)
+    await this.assertLinkedWorktree(repository, worktree.path, branch, reusedWorktree || reusedLocalBranch ? undefined : base.commit, signal)
     await this.assertRootStateUnchanged(repository.root, rootState, signal)
     this.log("debug", "Linked worktree verified", {
       workspaceId: worktree.workspaceId,
@@ -847,19 +854,81 @@ export class HerdrDispatcher {
   }
 
   private async findExistingWorktree(repository: RepositoryInfo, branch: string, signal?: AbortSignal): Promise<ExistingWorktreeInfo | undefined> {
-    const output = await runStage(this.dependencies, {
-      executable: "herdr",
-      args: ["worktree", "list", "--cwd", repository.root],
-      cwd: repository.root,
-      ...(signal ? { signal } : {}),
-    }, "Could not list existing Herdr worktrees.")
-    const matching = parseWorktreeListResult(output).find((worktree) => worktree.branch === branch)
+    let matching = (await this.listWorktrees(repository.root, signal)).find((worktree) => worktree.branch === branch)
     if (!matching) return undefined
+    if (matching.isPrunable) {
+      try {
+        await this.dependencies.runner.run({
+          executable: "git",
+          args: ["worktree", "repair", matching.path],
+          cwd: repository.root,
+          ...(signal ? { signal } : {}),
+        })
+      } catch (error) {
+        if (signal?.aborted) throw error
+        this.log("debug", "Could not repair prunable pull request worktree", {
+          branch,
+          path: matching.path,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+      const worktreesAfterRepair = await this.listWorktrees(repository.root, signal)
+      matching = worktreesAfterRepair.find((worktree) => worktree.branch === branch)
+      if (matching?.isPrunable) {
+        throw new DispatchError(`Prunable pull request worktree ${JSON.stringify(matching.path)} could not be repaired. Confirm the checkout is permanently unavailable and prune it manually before retrying.`)
+      }
+      if (!matching) return undefined
+      this.log("info", "Repaired stale pull request worktree registration", {
+        branch,
+        path: matching.path,
+      })
+    }
     const matchingPath = await this.dependencies.realpath(matching.path)
     if (matchingPath === repository.root || matching.isLinkedWorktree === false) {
       throw new DispatchError(`Pull request branch ${JSON.stringify(branch)} is checked out in the primary checkout and cannot be dispatched.`)
     }
     return { ...matching, path: matchingPath }
+  }
+
+  private async listWorktrees(repositoryRoot: string, signal?: AbortSignal): Promise<ExistingWorktreeInfo[]> {
+    const output = await runStage(this.dependencies, {
+      executable: "herdr",
+      args: ["worktree", "list", "--cwd", repositoryRoot],
+      cwd: repositoryRoot,
+      ...(signal ? { signal } : {}),
+    }, "Could not list existing Herdr worktrees.")
+    return parseWorktreeListResult(output)
+  }
+
+  private async prepareExistingPullRequestBranch(repositoryRoot: string, branch: string, remoteCommit: string, signal?: AbortSignal): Promise<void> {
+    const localCommit = (await runStage(this.dependencies, {
+      executable: "git",
+      args: ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`],
+      cwd: repositoryRoot,
+      ...(signal ? { signal } : {}),
+    }, `Could not read existing pull request branch ${JSON.stringify(branch)}.`)).trim()
+    if (localCommit === remoteCommit) return
+    if (await commandSucceeds(this.dependencies, {
+      executable: "git",
+      args: ["merge-base", "--is-ancestor", localCommit, remoteCommit],
+      cwd: repositoryRoot,
+      ...(signal ? { signal } : {}),
+    })) {
+      await runStage(this.dependencies, {
+        executable: "git",
+        args: ["update-ref", `refs/heads/${branch}`, remoteCommit, localCommit],
+        cwd: repositoryRoot,
+        ...(signal ? { signal } : {}),
+      }, `Could not fast-forward existing pull request branch ${JSON.stringify(branch)}.`)
+      return
+    }
+    if (await commandSucceeds(this.dependencies, {
+      executable: "git",
+      args: ["merge-base", "--is-ancestor", remoteCommit, localCommit],
+      cwd: repositoryRoot,
+      ...(signal ? { signal } : {}),
+    })) return
+    throw new DispatchError(`Existing pull request branch ${JSON.stringify(branch)} has diverged from the remote pull request branch.`)
   }
 
   private async prepareExistingPullRequestWorktree(repositoryRoot: string, worktree: ExistingWorktreeInfo, remoteCommit: string, signal?: AbortSignal): Promise<void> {
