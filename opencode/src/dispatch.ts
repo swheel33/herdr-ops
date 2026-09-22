@@ -7,6 +7,14 @@ import { CommandError, DispatchError } from "./errors.js"
 import { NodeCommandRunner } from "./process.js"
 import { withRepositoryLock } from "./repository-lock.js"
 import { IMPLEMENTOR_AGENT } from "./workflow.js"
+import {
+  forceRemoveWorktree,
+  hasActiveAgent,
+  isEvacuatedWorktree,
+  listAgents,
+  listWorktrees,
+  type ExistingWorktreeInfo,
+} from "./worktree-lifecycle.js"
 import type {
   CommandSpec,
   DispatchDependencies,
@@ -73,47 +81,6 @@ function isMissingFileError(error: unknown): boolean {
     "code" in error &&
     (error as NodeJS.ErrnoException).code === "ENOENT"
   )
-}
-
-export interface ExistingWorktreeInfo {
-  path: string
-  branch?: string
-  openWorkspaceId?: string
-  isLinkedWorktree?: boolean
-  isPrunable?: boolean
-}
-
-export function parseWorktreeListResult(stdout: string): ExistingWorktreeInfo[] {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(stdout)
-  } catch (error) {
-    throw new DispatchError("Herdr worktree listing returned malformed JSON.", { cause: error })
-  }
-
-  const worktrees = (parsed as { result?: { worktrees?: unknown } }).result?.worktrees
-  if (!Array.isArray(worktrees)) {
-    throw new DispatchError("Herdr worktree listing did not include result.worktrees.")
-  }
-
-  return worktrees.flatMap((entry): ExistingWorktreeInfo[] => {
-    if (typeof entry !== "object" || entry === null) return []
-    const value = entry as Record<string, unknown>
-    if (typeof value.path !== "string") return []
-    return [{
-      path: value.path,
-      ...(typeof value.branch === "string" ? { branch: value.branch } : {}),
-      ...(typeof value.open_workspace_id === "string"
-        ? { openWorkspaceId: value.open_workspace_id }
-        : {}),
-      ...(typeof value.is_linked_worktree === "boolean"
-        ? { isLinkedWorktree: value.is_linked_worktree }
-        : {}),
-      ...(typeof value.is_prunable === "boolean"
-        ? { isPrunable: value.is_prunable }
-        : {}),
-    }]
-  })
 }
 
 export function parseWorktreeResult(stdout: string): WorktreeInfo {
@@ -244,12 +211,6 @@ interface AgentState {
   stateChangeSeq: number
 }
 
-interface ListedAgent {
-  status?: string
-  cwd?: string
-  workspaceId?: string
-}
-
 function parseAgentState(stdout: string): AgentState {
   let parsed: unknown
   try {
@@ -264,26 +225,6 @@ function parseAgentState(stdout: string): AgentState {
     throw new DispatchError("Herdr agent inspection did not include agent status and state-change sequence.")
   }
   return { status: agent.agent_status, stateChangeSeq: agent.state_change_seq }
-}
-
-function parseAgentList(stdout: string): ListedAgent[] {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(stdout)
-  } catch (error) {
-    throw new DispatchError("Herdr agent listing returned malformed JSON.", { cause: error })
-  }
-  const agents = (parsed as { result?: { agents?: unknown } }).result?.agents
-  if (!Array.isArray(agents)) throw new DispatchError("Herdr agent listing did not include result.agents.")
-  return agents.flatMap((entry): ListedAgent[] => {
-    if (typeof entry !== "object" || entry === null) return []
-    const value = entry as Record<string, unknown>
-    return [{
-      ...(typeof value.agent_status === "string" ? { status: value.agent_status } : {}),
-      ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
-      ...(typeof value.workspace_id === "string" ? { workspaceId: value.workspace_id } : {}),
-    }]
-  })
 }
 
 async function runStage(
@@ -428,7 +369,7 @@ export class HerdrDispatcher {
         })
       }
       if (!base) throw new DispatchError("Dispatch target could not be resolved.")
-      const existingWorktree = input.mode === "pull_request"
+      let existingWorktree = input.mode === "pull_request"
         ? await this.findExistingWorktree(repository, branch, signal)
         : undefined
       const branchExists = await commandSucceeds(this.dependencies, {
@@ -438,8 +379,12 @@ export class HerdrDispatcher {
         ...(signal ? { signal } : {}),
       })
       if (existingWorktree) {
-        reusedWorktree = true
-        await this.prepareExistingPullRequestWorktree(repository.root, existingWorktree, base.commit, signal)
+        reusedWorktree = await this.prepareExistingPullRequestWorktree(repository.root, existingWorktree, base.commit, signal)
+        if (!reusedWorktree) {
+          existingWorktree = undefined
+          reusedLocalBranch = true
+          await this.prepareExistingPullRequestBranch(repository.root, branch, base.commit, signal)
+        }
       } else if (branchExists) {
         if (input.mode !== "pull_request") {
           throw new DispatchError(`Branch ${JSON.stringify(branch)} already exists. Choose a new branch.`)
@@ -854,7 +799,7 @@ export class HerdrDispatcher {
   }
 
   private async findExistingWorktree(repository: RepositoryInfo, branch: string, signal?: AbortSignal): Promise<ExistingWorktreeInfo | undefined> {
-    let matching = (await this.listWorktrees(repository.root, signal)).find((worktree) => worktree.branch === branch)
+    let matching = (await listWorktrees(this.dependencies.runner, repository.root, signal)).find((worktree) => worktree.branch === branch)
     if (!matching) return undefined
     if (matching.isPrunable) {
       try {
@@ -872,10 +817,18 @@ export class HerdrDispatcher {
           error: error instanceof Error ? error.message : String(error),
         })
       }
-      const worktreesAfterRepair = await this.listWorktrees(repository.root, signal)
+      const worktreesAfterRepair = await listWorktrees(this.dependencies.runner, repository.root, signal)
       matching = worktreesAfterRepair.find((worktree) => worktree.branch === branch)
       if (matching?.isPrunable) {
-        throw new DispatchError(`Prunable pull request worktree ${JSON.stringify(matching.path)} could not be repaired. Confirm the checkout is permanently unavailable and prune it manually before retrying.`)
+        if (hasActiveAgent(matching, await listAgents(this.dependencies.runner, repository.root, signal))) {
+          throw new DispatchError("The prunable pull request worktree still has an active agent and cannot be recreated.")
+        }
+        await forceRemoveWorktree(this.dependencies.runner, repository.root, matching, signal)
+        this.log("info", "Removed prunable pull request worktree registration for recreation", {
+          branch,
+          path: matching.path,
+        })
+        return undefined
       }
       if (!matching) return undefined
       this.log("info", "Repaired stale pull request worktree registration", {
@@ -888,16 +841,6 @@ export class HerdrDispatcher {
       throw new DispatchError(`Pull request branch ${JSON.stringify(branch)} is checked out in the primary checkout and cannot be dispatched.`)
     }
     return { ...matching, path: matchingPath }
-  }
-
-  private async listWorktrees(repositoryRoot: string, signal?: AbortSignal): Promise<ExistingWorktreeInfo[]> {
-    const output = await runStage(this.dependencies, {
-      executable: "herdr",
-      args: ["worktree", "list", "--cwd", repositoryRoot],
-      cwd: repositoryRoot,
-      ...(signal ? { signal } : {}),
-    }, "Could not list existing Herdr worktrees.")
-    return parseWorktreeListResult(output)
   }
 
   private async prepareExistingPullRequestBranch(repositoryRoot: string, branch: string, remoteCommit: string, signal?: AbortSignal): Promise<void> {
@@ -931,17 +874,9 @@ export class HerdrDispatcher {
     throw new DispatchError(`Existing pull request branch ${JSON.stringify(branch)} has diverged from the remote pull request branch.`)
   }
 
-  private async prepareExistingPullRequestWorktree(repositoryRoot: string, worktree: ExistingWorktreeInfo, remoteCommit: string, signal?: AbortSignal): Promise<void> {
-    const agents = parseAgentList(await runStage(this.dependencies, {
-      executable: "herdr",
-      args: ["agent", "list"],
-      cwd: repositoryRoot,
-      ...(signal ? { signal } : {}),
-    }, "Could not inspect agents attached to the existing pull request worktree."))
-    if (agents.some((agent) => agent.status !== "idle" && (
-      agent.cwd === worktree.path ||
-      (worktree.openWorkspaceId !== undefined && agent.workspaceId === worktree.openWorkspaceId)
-    ))) {
+  private async prepareExistingPullRequestWorktree(repositoryRoot: string, worktree: ExistingWorktreeInfo, remoteCommit: string, signal?: AbortSignal): Promise<boolean> {
+    const agents = await listAgents(this.dependencies.runner, repositoryRoot, signal)
+    if (hasActiveAgent(worktree, agents)) {
       throw new DispatchError("The pull request worktree already has an active agent.")
     }
     const status = await runStage(this.dependencies, {
@@ -950,7 +885,23 @@ export class HerdrDispatcher {
       cwd: worktree.path,
       ...(signal ? { signal } : {}),
     }, "Could not inspect the existing pull request worktree.")
-    if (status.trim()) throw new DispatchError("The existing pull request worktree is dirty and cannot be reused safely.")
+    if (status.trim()) {
+      if (!await isEvacuatedWorktree(this.dependencies.runner, worktree.path, signal)) {
+        throw new DispatchError("The existing pull request worktree contains tracked or unclassified changes and cannot be reused safely.")
+      }
+      if (hasActiveAgent(worktree, await listAgents(this.dependencies.runner, repositoryRoot, signal))) {
+        throw new DispatchError("The evacuated pull request worktree gained an active agent and cannot be recreated.")
+      }
+      if (!await isEvacuatedWorktree(this.dependencies.runner, worktree.path, signal)) {
+        throw new DispatchError("The pull request worktree changed while evacuation recovery was being prepared.")
+      }
+      await forceRemoveWorktree(this.dependencies.runner, repositoryRoot, worktree, signal)
+      this.log("info", "Force-removed evacuated pull request worktree for recreation", {
+        branch: worktree.branch,
+        path: worktree.path,
+      })
+      return false
+    }
 
     const localCommit = (await runStage(this.dependencies, {
       executable: "git",
@@ -958,7 +909,7 @@ export class HerdrDispatcher {
       cwd: worktree.path,
       ...(signal ? { signal } : {}),
     }, "Could not read the existing pull request worktree commit.")).trim()
-    if (localCommit === remoteCommit) return
+    if (localCommit === remoteCommit) return true
     if (await commandSucceeds(this.dependencies, {
       executable: "git",
       args: ["merge-base", "--is-ancestor", localCommit, remoteCommit],
@@ -971,14 +922,14 @@ export class HerdrDispatcher {
         cwd: worktree.path,
         ...(signal ? { signal } : {}),
       }, "Could not fast-forward the existing pull request worktree.")
-      return
+      return true
     }
     if (await commandSucceeds(this.dependencies, {
       executable: "git",
       args: ["merge-base", "--is-ancestor", remoteCommit, localCommit],
       cwd: worktree.path,
       ...(signal ? { signal } : {}),
-    })) return
+    })) return true
     throw new DispatchError("The existing pull request worktree has diverged from the remote pull request branch.")
   }
 

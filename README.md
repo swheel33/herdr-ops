@@ -4,7 +4,7 @@ Small, host-specific tools for Herdr-based coding workspaces.
 
 ## Components
 
-- `opencode/`: OpenCode workflow, one-feature Herdr dispatch, and safe pull-request worktree maintenance.
+- `opencode/`: OpenCode workflow, batched Herdr dispatch, and pull-request worktree lifecycle maintenance.
 - `herdr/`: small Herdr adapter for an on-demand `ghpr` split pane.
 - `cli/ghpr/`: standalone GitHub pull request viewer built with Bun, React, and OpenTUI.
 

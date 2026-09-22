@@ -3,9 +3,14 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 import { CommandError } from "./errors.js"
-import { parseWorktreeListResult, parseWorktreeResult, type ExistingWorktreeInfo } from "./dispatch.js"
 import { withRepositoryLock } from "./repository-lock.js"
 import type { CommandRunner, DispatchLogger } from "./types.js"
+import {
+  forceRemoveWorktree,
+  hasActiveAgent,
+  listAgents,
+  listWorktrees,
+} from "./worktree-lifecycle.js"
 
 const DEVELOP_BRANCH = "develop"
 const METADATA_SOURCE = "herdr-ops.pr"
@@ -24,29 +29,10 @@ interface PullRequestInfo {
   state?: unknown
 }
 
-interface AgentInfo {
-  agentStatus?: unknown
-  cwd?: unknown
-  workspaceId?: unknown
-}
-
 function parsePullRequests(stdout: string): PullRequestInfo[] {
   const parsed = JSON.parse(stdout) as unknown
   if (!Array.isArray(parsed)) throw new Error("gh pr list did not return an array")
   return parsed.map((entry) => entry as PullRequestInfo)
-}
-
-function parseAgents(stdout: string): AgentInfo[] {
-  const parsed = JSON.parse(stdout) as { result?: { agents?: unknown } }
-  if (!Array.isArray(parsed.result?.agents)) throw new Error("herdr agent list did not return an agent array")
-  return parsed.result.agents.map((entry) => {
-    const value = entry as Record<string, unknown>
-    return {
-      ...(typeof value.agent_status === "string" ? { agentStatus: value.agent_status } : {}),
-      ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
-      ...(typeof value.workspace_id === "string" ? { workspaceId: value.workspace_id } : {}),
-    }
-  })
 }
 
 function commandSucceededError(error: unknown): boolean {
@@ -66,10 +52,6 @@ async function commandSucceeds(
     if (commandSucceededError(error)) return false
     throw error
   }
-}
-
-function isActiveAgent(agent: AgentInfo): boolean {
-  return agent.agentStatus !== "idle"
 }
 
 export class RepositoryMaintenance {
@@ -175,8 +157,25 @@ export class RepositoryMaintenance {
     return this.pullRequests
   }
 
+  private async listPullRequestsForBranch(
+    branch: string,
+    state: "all" | "open",
+    signal: AbortSignal,
+  ): Promise<PullRequestInfo[]> {
+    const result = await this.runner.run({
+      executable: "gh",
+      args: [
+        "pr", "list", "--state", state, "--head", branch, "--limit", "1",
+        "--json", "number,isDraft,headRefName,headRefOid,isCrossRepository,state",
+      ],
+      cwd: this.repositoryRoot,
+      signal,
+    })
+    return parsePullRequests(result.stdout).filter((pr) => pr.headRefName === branch)
+  }
+
   private async refreshMetadata(signal: AbortSignal): Promise<void> {
-    for (const worktree of await this.listWorktrees(signal)) {
+    for (const worktree of await listWorktrees(this.runner, this.repositoryRoot, signal)) {
       if (!worktree.openWorkspaceId) continue
       try {
         const branch = worktree.branch ?? ""
@@ -284,7 +283,7 @@ export class RepositoryMaintenance {
       return
     }
 
-    const checkout = (await this.listWorktrees(signal)).find((worktree) => worktree.branch === DEVELOP_BRANCH)
+    const checkout = (await listWorktrees(this.runner, this.repositoryRoot, signal)).find((worktree) => worktree.branch === DEVELOP_BRANCH)
     if (checkout) {
       const status = await this.runner.run({
         executable: "git",
@@ -319,46 +318,29 @@ export class RepositoryMaintenance {
   }
 
   private async removeClosedPullRequestWorktrees(signal: AbortSignal): Promise<void> {
-    const worktrees = (await this.listWorktrees(signal)).filter((worktree) =>
+    const worktrees = (await listWorktrees(this.runner, this.repositoryRoot, signal)).filter((worktree) =>
       worktree.isLinkedWorktree === true && Boolean(worktree.branch),
     )
     if (!worktrees.length) return
 
-    const agents = await this.listAgents(signal)
+    const agents = await listAgents(this.runner, this.repositoryRoot, signal)
     for (const worktree of worktrees) {
       const branch = worktree.branch!
       try {
-        if (this.hasActiveAgent(worktree, agents)) {
+        if (hasActiveAgent(worktree, agents)) {
           this.logger?.("debug", "Skipping worktree with an active agent", {
             branch,
             path: worktree.path,
           })
           continue
         }
-        if (!await this.canRemoveWorktree(worktree, branch, signal)) continue
-
-        let workspaceID = worktree.openWorkspaceId
-        if (!workspaceID) {
-          const opened = await this.runner.run({
-            executable: "herdr",
-            args: ["worktree", "open", "--cwd", this.repositoryRoot, "--path", worktree.path, "--no-focus"],
-            cwd: this.repositoryRoot,
-            signal,
-          })
-          workspaceID = parseWorktreeResult(opened.stdout).workspaceId
-        }
-        if (this.hasActiveAgent(worktree, await this.listAgents(signal), workspaceID)) continue
-        if (!await this.canRemoveWorktree(worktree, branch, signal)) continue
-        await this.runner.run({
-          executable: "herdr",
-          args: ["worktree", "remove", "--workspace", workspaceID],
-          cwd: this.repositoryRoot,
-          signal,
-        })
-        this.logger?.("info", "Removed worktree for closed pull request", {
+        if (!await this.isTerminalPullRequestBranch(branch, signal)) continue
+        if (hasActiveAgent(worktree, await listAgents(this.runner, this.repositoryRoot, signal))) continue
+        await forceRemoveWorktree(this.runner, this.repositoryRoot, worktree, signal)
+        this.logger?.("info", "Force-removed worktree for terminal pull request", {
           branch,
           path: worktree.path,
-          workspaceID,
+          ...(worktree.openWorkspaceId ? { workspaceID: worktree.openWorkspaceId } : {}),
         })
       } catch (error) {
         if (signal.aborted) throw error
@@ -371,65 +353,16 @@ export class RepositoryMaintenance {
     }
   }
 
-  private async listAgents(signal: AbortSignal): Promise<AgentInfo[]> {
-    const output = await this.runner.run({
-      executable: "herdr",
-      args: ["agent", "list"],
-      cwd: this.repositoryRoot,
-      signal,
-    })
-    return parseAgents(output.stdout)
-  }
-
-  private hasActiveAgent(worktree: ExistingWorktreeInfo, agents: AgentInfo[], workspaceID = worktree.openWorkspaceId): boolean {
-    return agents.some((agent) => {
-      if (!isActiveAgent(agent)) return false
-      if (workspaceID && agent.workspaceId === workspaceID) return true
-      return agent.cwd === worktree.path
-    })
-  }
-
-  private async canRemoveWorktree(
-    worktree: ExistingWorktreeInfo,
+  private async isTerminalPullRequestBranch(
     branch: string,
     signal: AbortSignal,
   ): Promise<boolean> {
-    const status = await this.runner.run({
-      executable: "git",
-      args: ["status", "--porcelain", "--untracked-files=all"],
-      cwd: worktree.path,
-      signal,
-    })
-    if (status.stdout.trim()) {
-      this.logger?.("debug", "Skipping dirty pull request worktree", {
-        branch,
-        path: worktree.path,
-      })
+    if ((await this.listPullRequestsForBranch(branch, "open", signal)).some((pr) => pr.state === "OPEN")) {
       return false
     }
-
-    const worktreeCommit = (await this.runner.run({
-      executable: "git",
-      args: ["rev-parse", "--verify", "HEAD"],
-      cwd: worktree.path,
-      signal,
-    })).stdout.trim()
-    const pullRequests = (await this.listPullRequests(signal)).filter((pr) =>
-      pr.headRefName === branch && pr.isCrossRepository === false,
-    )
-    if (pullRequests.length === 0 || pullRequests.some((pr) => pr.state === "OPEN")) return false
-    return pullRequests.some((pr) =>
-      (pr.state === "CLOSED" || pr.state === "MERGED") && pr.headRefOid === worktreeCommit,
-    )
-  }
-
-  private async listWorktrees(signal: AbortSignal): Promise<ExistingWorktreeInfo[]> {
-    const output = await this.runner.run({
-      executable: "herdr",
-      args: ["worktree", "list", "--cwd", this.repositoryRoot],
-      cwd: this.repositoryRoot,
-      signal,
-    })
-    return parseWorktreeListResult(output.stdout)
+    return (await this.listPullRequestsForBranch(branch, "all", signal))
+      .some((pr) =>
+        pr.isCrossRepository === false && (pr.state === "CLOSED" || pr.state === "MERGED"),
+      )
   }
 }

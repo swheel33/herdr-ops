@@ -13,7 +13,7 @@ The plugin intentionally handles one workflow:
 5. It starts one Build agent per feature in a 70/30 agent and shell layout.
 6. It delivers each plan and waits for that agent to begin working.
 7. It reports each feature independently and continues the batch after failures.
-8. It periodically refreshes pull-request metadata, safely advances local `develop`, and removes only clean, inactive worktrees for closed or merged pull requests.
+8. It periodically refreshes pull-request metadata, safely advances local `develop`, and force-removes inactive worktrees for closed or merged pull requests.
 
 Arbitrary branch continuation and fork pull requests are outside this plugin's scope.
 
@@ -76,7 +76,7 @@ To continue an existing pull request, include its URL or number in the invocatio
 
 The plugin resolves the open pull request with `gh`, freshly fetches its head from `origin`, and creates or safely reuses a linked worktree on that exact branch. It configures `origin/<branch>` as the upstream and instructs the implementor to push completed commits to the existing pull request instead of creating another branch or pull request. Closed, merged, unrelated, or fork pull requests are rejected.
 
-An existing worktree is reused only when it is clean, has no active agent, and has not diverged from the pull request. A worktree behind the remote is fast-forwarded; one with clean local commits ahead of the remote is preserved. Prunable worktree registrations are repaired when possible; unrepaired registrations are rejected rather than automatically pruning a potentially unavailable mount. A surviving local PR branch without a registered worktree is verified against the fetched PR head before Herdr recreates its linked worktree; branches with divergent commits are rejected rather than reset.
+An existing worktree is reused only when it is clean, has no active agent, and has not diverged from the pull request. A worktree behind the remote is fast-forwarded; one with clean local commits ahead of the remote is preserved. A fully evacuated checkout, where every tracked file has disappeared, is force-removed and recreated for an open pull request. Prunable registrations are repaired when possible or removed with a targeted forced worktree removal before recreation. Other dirty open-PR worktrees remain blocked. A surviving local PR branch without a registered worktree is verified against the fetched PR head before Herdr recreates its linked worktree; branches with divergent commits are rejected rather than reset.
 
 The default base is the freshly fetched branch advertised by `origin/HEAD`. An explicit base may be supplied when needed. All commands run on the host owning the checkout, which is also the supported SSH setup.
 
@@ -103,4 +103,4 @@ npm run test:e2e
 
 The E2E workflow creates a disposable repository, worktree, pane, and Build agent and may incur model usage. Set `E2E_MODEL=provider/model-id` or `E2E_TIMEOUT_MS=<milliseconds>` when needed.
 
-Repository maintenance runs immediately and every minute. PR sidebar metadata is reported with a two-hour TTL. Because continued pull requests use their actual head branch, the existing cleanup pass recognizes them after closure or merge. Cleanup skips dirty worktrees and workspaces with active agents, requires the worktree commit to match the closed pull request head, retains the local branch, and never uses forced worktree removal.
+Repository maintenance runs immediately and every minute. PR sidebar metadata is reported with a two-hour TTL. Because continued pull requests use their actual head branch, the cleanup pass recognizes them after closure or merge. When a same-repository branch has at least one closed or merged pull request and no open pull request, cleanup force-removes its linked worktree even when the checkout is dirty, evacuated, broken, or prunable. Cleanup never removes the primary checkout or a worktree with an active or unknown-status agent. It retains the local branch and committed history, but intentionally discards uncommitted worktree changes for terminal pull requests.
