@@ -19,11 +19,14 @@ export interface CommandRunner {
 
 export interface DispatchInput {
   title: string
-  branch: string
+  branch?: string
+  pullRequest?: string
   plan: string
   base?: string
   allowDirtyRoot?: boolean
 }
+
+export type DispatchMode = "new" | "pull_request"
 
 export interface RepositoryInfo {
   root: string
@@ -38,10 +41,13 @@ export interface WorktreeInfo {
 }
 
 export interface DispatchResult extends WorktreeInfo {
+  mode: DispatchMode
   title: string
   branch: string
   base: string
   baseCommit: string
+  pullRequest?: string
+  reusedWorktree: boolean
   shellPaneId: string
   agentName: string
   planDelivered: true

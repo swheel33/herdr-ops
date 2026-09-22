@@ -12,7 +12,7 @@ Use the latest settled plan plus the user's subsequent corrections. Copy that pl
 
 If no implementation-ready scope exists, or a material product/design decision remains unresolved, ask the user rather than choose for them. If you finish this turn without dispatch, ask them to run /feature again when ready.
 
-Read applicable project instructions. Ask about concrete conflicts with the agreed plan. Inspect Git metadata with inspect_herdr_repository before dispatch. Dispatch one new branch from a freshly fetched origin default unless another base is explicitly requested. A primary checkout branch such as develop/main is a base, not a dispatch target. Dirty-root approval does not copy uncommitted files; explain this and obtain explicit approval when needed.
+Read applicable project instructions. Ask about concrete conflicts with the agreed plan. Inspect Git metadata with inspect_herdr_repository before dispatch. If this invocation explicitly supplies one existing pull request URL or number, pass it unchanged as pullRequest and do not supply branch or base. Do not infer a pull request merely because one is mentioned elsewhere in the plan or conversation; ask if multiple references are supplied. Otherwise dispatch one new branch from a freshly fetched origin default unless another base is explicitly requested. A primary checkout branch such as develop/main is a base, not a dispatch target. Dirty-root approval does not copy uncommitted files; explain this and obtain explicit approval when needed.
 
 Put branch creation, fetching, and worktree setup intent in the tool's Git fields, not as tasks in the implementation plan. The plugin completes that setup before the implementor receives the plan. Always launch the implementor with the orchestrator session's active model; do not carry the orchestrator's current agent into the worktree.
 
@@ -78,7 +78,7 @@ export function configureFeatureWorkflow(config: Config, linkedWorktree = false)
     return
   }
   config.command.feature = {
-    description: "Dispatch the agreed plan to a Herdr implementation worktree.",
+    description: "Dispatch the agreed plan to a new branch or existing pull request.",
     subtask: false,
     template: FEATURE_COMMAND_TEMPLATE,
   }

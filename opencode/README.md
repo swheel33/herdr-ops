@@ -7,7 +7,7 @@ An OpenCode plugin for turning one agreed implementation plan into a background 
 The plugin intentionally handles one workflow:
 
 1. `/feature` authorizes one dispatch.
-2. The plugin creates one new branch and linked worktree.
+2. The plugin creates one new branch or checks out one explicitly supplied existing pull request branch in a linked worktree.
 3. It links ignored local environment files into the worktree.
 4. It installs worktree dependencies with `pnpm install`.
 5. It starts one Build agent in a 70/30 agent and shell layout.
@@ -15,7 +15,7 @@ The plugin intentionally handles one workflow:
 7. It reports `dispatched` only after that working state is confirmed.
 8. It periodically refreshes pull-request metadata, safely advances local `develop`, and removes only clean, inactive worktrees for closed or merged pull requests.
 
-Batch dispatches and existing-branch continuation are outside this plugin's scope.
+Batch dispatches, arbitrary branch continuation, and fork pull requests are outside this plugin's scope.
 
 ## Requirements
 
@@ -23,7 +23,7 @@ Batch dispatches and existing-branch continuation are outside this plugin's scop
 - Herdr 0.9.1
 - Herdr's OpenCode integration
 - Git
-- GitHub CLI (`gh`), authenticated for PR metadata maintenance
+- GitHub CLI (`gh`), authenticated for PR dispatch and metadata maintenance
 - Node.js 20 or newer
 - `pnpm` for installing dependencies in new worktrees
 
@@ -66,6 +66,16 @@ used as a fallback when the session does not provide one.
 
 Run `/feature` in the same conversation as the settled plan. The command is explicit authorization; ordinary conversation cannot dispatch. The primary checkout must be clean unless the user explicitly approves `allowDirtyRoot`, and the plugin never resets or repairs it.
 
+To continue an existing pull request, include its URL or number in the invocation:
+
+```text
+/feature continue https://github.com/OWNER/REPOSITORY/pull/123
+```
+
+The plugin resolves the open pull request with `gh`, freshly fetches its head from `origin`, and creates or safely reuses a linked worktree on that exact branch. It configures `origin/<branch>` as the upstream and instructs the implementor to push completed commits to the existing pull request instead of creating another branch or pull request. Closed, merged, unrelated, or fork pull requests are rejected.
+
+An existing worktree is reused only when it is clean, has no active agent, and has not diverged from the pull request. A worktree behind the remote is fast-forwarded; one with clean local commits ahead of the remote is preserved. A local pull request branch without a reusable linked worktree fails safely rather than being deleted or reset.
+
 The default base is the freshly fetched branch advertised by `origin/HEAD`. An explicit base may be supplied when needed. All commands run on the host owning the checkout, which is also the supported SSH setup.
 
 The handoff and final result are recorded in `<git-common-dir>/opencode-herdr-dispatch/handoffs.jsonl`. Failed handoffs include any workspace, pane, or agent identifiers already created. A submitted plan whose agent does not become working is not reported as dispatched and is never retried automatically.
@@ -91,4 +101,4 @@ npm run test:e2e
 
 The E2E workflow creates a disposable repository, worktree, pane, and Build agent and may incur model usage. Set `E2E_MODEL=provider/model-id` or `E2E_TIMEOUT_MS=<milliseconds>` when needed.
 
-Repository maintenance runs immediately and every minute. PR sidebar metadata is reported with a two-hour TTL. Cleanup skips dirty worktrees and workspaces with active agents, and never uses forced worktree removal.
+Repository maintenance runs immediately and every minute. PR sidebar metadata is reported with a two-hour TTL. Because continued pull requests use their actual head branch, the existing cleanup pass recognizes them after closure or merge. Cleanup skips dirty worktrees and workspaces with active agents, requires the worktree commit to match the closed pull request head, retains the local branch, and never uses forced worktree removal.

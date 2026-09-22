@@ -131,11 +131,12 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
         },
       }),
       dispatch_feature_to_herdr: tool({
-        description: "Dispatch one agreed implementation plan to one new Herdr worktree after /feature authorization.",
+        description: "Dispatch one agreed implementation plan to a new branch or explicitly supplied existing pull request after /feature authorization.",
         args: {
           authorization: tool.schema.string().describe("Exact feature_authorization token from the current /feature invocation"),
           title: tool.schema.string().min(1).max(80).describe("Short feature title"),
-          branch: tool.schema.string().describe("New local Git branch for this feature"),
+          branch: tool.schema.string().optional().describe("New local Git branch; omit when continuing a pull request"),
+          pullRequest: tool.schema.string().optional().describe("Existing same-repository pull request URL or number; mutually exclusive with branch and base"),
           plan: tool.schema.string().describe("The implementation-ready handoff for this feature"),
           base: tool.schema.string().optional().describe("Optional explicit Git base ref; defaults to freshly fetched origin HEAD"),
           allowDirtyRoot: tool.schema.boolean().optional().describe("Explicitly allow dispatch when the primary checkout is dirty"),
@@ -158,8 +159,9 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
           const receiptID = args.authorization
           const input = {
             title: args.title,
-            branch: args.branch,
             plan: args.plan,
+            ...(args.branch === undefined ? {} : { branch: args.branch }),
+            ...(args.pullRequest === undefined ? {} : { pullRequest: args.pullRequest }),
             ...(args.base === undefined ? {} : { base: args.base }),
             ...(args.allowDirtyRoot === undefined ? {} : { allowDirtyRoot: args.allowDirtyRoot }),
           }

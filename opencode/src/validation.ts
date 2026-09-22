@@ -10,13 +10,16 @@ import type {
 export const MIN_PLAN_LENGTH = 80
 export const MAX_TITLE_LENGTH = 80
 
-export interface ValidatedDispatchInput {
+interface ValidatedDispatchCommon {
   title: string
-  branch: string
   plan: string
-  base?: string
   allowDirtyRoot: boolean
 }
+
+export type ValidatedDispatchInput = ValidatedDispatchCommon & (
+  | { mode: "new"; branch: string; base?: string }
+  | { mode: "pull_request"; pullRequest: string }
+)
 
 export function validatePlan(plan: string): void {
   const trimmed = plan.trim()
@@ -149,7 +152,8 @@ export async function validateDispatchInput(
   signal?: AbortSignal,
 ): Promise<ValidatedDispatchInput> {
   const title = input.title.trim()
-  const branch = input.branch.trim()
+  const branch = input.branch?.trim()
+  const pullRequest = input.pullRequest?.trim()
   const plan = input.plan.trim()
   const base = input.base?.trim()
 
@@ -158,10 +162,24 @@ export async function validateDispatchInput(
     throw new DispatchError(`Feature title must be at most ${MAX_TITLE_LENGTH} characters.`)
   }
   validatePlan(plan)
-  await validateBranch(runner, cwd, branch, signal)
+  if (Boolean(branch) === Boolean(pullRequest)) {
+    throw new DispatchError("Provide exactly one new branch or existing pull request.")
+  }
+  if (pullRequest) {
+    if (base) throw new DispatchError("Existing pull request dispatches do not accept a base ref.")
+    return {
+      mode: "pull_request",
+      title,
+      pullRequest,
+      plan,
+      allowDirtyRoot: input.allowDirtyRoot ?? false,
+    }
+  }
+  await validateBranch(runner, cwd, branch!, signal)
   return {
+    mode: "new",
     title,
-    branch,
+    branch: branch!,
     plan,
     ...(base ? { base } : {}),
     allowDirtyRoot: input.allowDirtyRoot ?? false,

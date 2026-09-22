@@ -16,7 +16,7 @@ import type {
   RepositoryInfo,
   WorktreeInfo,
 } from "./types.js"
-import { resolveRepository, validateDispatchInput, type ValidatedDispatchInput } from "./validation.js"
+import { resolveRepository, validateBranch, validateDispatchInput, type ValidatedDispatchInput } from "./validation.js"
 
 const inFlight = new Set<string>()
 const SHELL_READY_RETRY_MS = 100
@@ -36,6 +36,17 @@ function createAgentName(branch: string): string {
 
 function optionalString(...values: unknown[]): string | undefined {
   return values.find((value): value is string => typeof value === "string" && value.length > 0)
+}
+
+function repositoryKey(value: string, pullRequest = false): string | undefined {
+  try {
+    const url = new URL(value)
+    const parts = url.pathname.split("/").filter(Boolean)
+    if (parts.length < 2 || (pullRequest && (parts[2] !== "pull" || !parts[3]))) return undefined
+    return `${url.hostname.toLowerCase()}/${parts[0]!.toLowerCase()}/${parts[1]!.replace(/\.git$/u, "").toLowerCase()}`
+  } catch {
+    return undefined
+  }
 }
 
 function isEnvironmentFile(relativePath: string): boolean {
@@ -229,6 +240,12 @@ interface AgentState {
   stateChangeSeq: number
 }
 
+interface ListedAgent {
+  status?: string
+  cwd?: string
+  workspaceId?: string
+}
+
 function parseAgentState(stdout: string): AgentState {
   let parsed: unknown
   try {
@@ -243,6 +260,26 @@ function parseAgentState(stdout: string): AgentState {
     throw new DispatchError("Herdr agent inspection did not include agent status and state-change sequence.")
   }
   return { status: agent.agent_status, stateChangeSeq: agent.state_change_seq }
+}
+
+function parseAgentList(stdout: string): ListedAgent[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch (error) {
+    throw new DispatchError("Herdr agent listing returned malformed JSON.", { cause: error })
+  }
+  const agents = (parsed as { result?: { agents?: unknown } }).result?.agents
+  if (!Array.isArray(agents)) throw new DispatchError("Herdr agent listing did not include result.agents.")
+  return agents.flatMap((entry): ListedAgent[] => {
+    if (typeof entry !== "object" || entry === null) return []
+    const value = entry as Record<string, unknown>
+    return [{
+      ...(typeof value.agent_status === "string" ? { status: value.agent_status } : {}),
+      ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
+      ...(typeof value.workspace_id === "string" ? { workspaceId: value.workspace_id } : {}),
+    }]
+  })
 }
 
 async function runStage(
@@ -281,6 +318,13 @@ interface ResolvedBase {
   commit: string
 }
 
+interface ResolvedPullRequest {
+  number: number
+  url: string
+  branch: string
+  commit: string
+}
+
 export class HerdrDispatcher {
   constructor(
     private readonly dependencies: DispatchDependencies = { runner: new NodeCommandRunner(), realpath },
@@ -294,19 +338,23 @@ export class HerdrDispatcher {
     this.log("info", "Dispatch requested", {
       cwd,
       title: input.title,
-      branch: input.branch,
-      base: input.base ?? "fresh origin default",
+      ...(input.branch ? { branch: input.branch } : {}),
+      ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
+      ...(input.branch ? { base: input.base ?? "fresh origin default" } : {}),
       planLength: input.plan.length,
     })
-    let branch = input.branch
+    let target = input.branch ?? input.pullRequest ?? "<unresolved>"
     let partial: DispatchPartialState | undefined
     try {
       const validated = await validateDispatchInput(this.dependencies.runner, cwd, input, signal)
-      branch = validated.branch
+      target = validated.mode === "new" ? validated.branch : validated.pullRequest
       this.log("debug", "Dispatch input validated", {
+        mode: validated.mode,
         title: validated.title,
-        branch: validated.branch,
-        ...(validated.base ? { base: validated.base } : {}),
+        ...(validated.mode === "new" ? {
+          branch: validated.branch,
+          ...(validated.base ? { base: validated.base } : {}),
+        } : { pullRequest: validated.pullRequest }),
         planLength: validated.plan.length,
       })
       const repository = await resolveRepository(this.dependencies.runner, cwd, this.dependencies.realpath, signal)
@@ -314,12 +362,14 @@ export class HerdrDispatcher {
         repository: repository.root,
         gitDir: repository.gitDir,
       })
-      const key = `${repository.root}\0${validated.branch}`
-      if (inFlight.has(key)) throw new DispatchError(`A dispatch for branch ${JSON.stringify(validated.branch)} is already in progress.`)
+      const key = validated.mode === "new"
+        ? `${repository.root}\0new\0${validated.branch}`
+        : `${repository.root}\0pull_request`
+      if (inFlight.has(key)) throw new DispatchError(`A dispatch for ${JSON.stringify(target)} is already in progress.`)
       inFlight.add(key)
       partial = {}
       try {
-        return await this.dispatchNewBranch(repository, validated, partial, implementationModel, signal)
+        return await this.dispatchBranch(repository, validated, partial, implementationModel, signal)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         throw new DispatchError(
@@ -332,7 +382,7 @@ export class HerdrDispatcher {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.log("error", "Dispatch failed", {
-        branch,
+        target,
         error: message,
         ...(partial ? { partial } : {}),
       })
@@ -340,7 +390,7 @@ export class HerdrDispatcher {
     }
   }
 
-  private async dispatchNewBranch(
+  private async dispatchBranch(
     repository: RepositoryInfo,
     input: ValidatedDispatchInput,
     partial: DispatchPartialState,
@@ -353,22 +403,48 @@ export class HerdrDispatcher {
       commit: rootState.commit,
     })
     await this.assertPrimaryCheckoutSafe(repository.root, input, signal)
-    const base = await this.resolveBase(repository.root, input.base, signal)
-    this.log("info", "Dispatch base resolved", {
-      base: base.label,
-      commit: base.commit,
-    })
+    let branch = input.mode === "new" ? input.branch : ""
+    let base = input.mode === "new"
+      ? await this.resolveBase(repository.root, input.base, signal)
+      : undefined
+    let pullRequest: ResolvedPullRequest | undefined
+    let reusedWorktree = false
+    if (base) this.log("info", "Dispatch base resolved", { base: base.label, commit: base.commit })
     const worktree = await withRepositoryLock(repository.commonDir, async () => {
+      if (input.mode === "pull_request") {
+        pullRequest = await this.resolvePullRequest(repository.root, input.pullRequest, signal)
+        branch = pullRequest.branch
+        base = { label: `pull request #${pullRequest.number}`, commit: pullRequest.commit }
+        await validateBranch(this.dependencies.runner, repository.root, branch, signal)
+        this.log("info", "Existing pull request resolved", {
+          pullRequest: pullRequest.url,
+          branch,
+          commit: pullRequest.commit,
+        })
+      }
+      if (!base) throw new DispatchError("Dispatch target could not be resolved.")
+      const existingWorktree = input.mode === "pull_request"
+        ? await this.findExistingWorktree(repository, branch, signal)
+        : undefined
       const branchExists = await commandSucceeds(this.dependencies, {
         executable: "git",
-        args: ["show-ref", "--verify", "--quiet", `refs/heads/${input.branch}`],
+        args: ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
         cwd: repository.root,
         ...(signal ? { signal } : {}),
       })
-      if (branchExists) throw new DispatchError(`Branch ${JSON.stringify(input.branch)} already exists. Choose a new branch.`)
+      if (existingWorktree) {
+        reusedWorktree = true
+        await this.prepareExistingPullRequestWorktree(repository.root, existingWorktree, base.commit, signal)
+      } else if (branchExists) {
+        throw new DispatchError(input.mode === "pull_request"
+          ? `Pull request branch ${JSON.stringify(branch)} already exists without a reusable linked worktree. Remove or open that checkout before retrying.`
+          : `Branch ${JSON.stringify(branch)} already exists. Choose a new branch.`)
+      }
       partial.phase = "workspace"
-      this.log("info", "Creating background Herdr worktree workspace", {
-        branch: input.branch,
+      this.log("info", existingWorktree
+        ? "Opening existing Herdr worktree workspace"
+        : "Creating background Herdr worktree workspace", {
+        branch,
         base: base.label,
         baseCommit: base.commit,
       })
@@ -376,30 +452,48 @@ export class HerdrDispatcher {
         this.dependencies,
         {
           executable: "herdr",
-          args: ["worktree", "create", "--cwd", repository.root, "--branch", input.branch, "--base", base.commit, "--label", input.title, "--no-focus"],
+          args: existingWorktree
+            ? ["worktree", "open", "--cwd", repository.root, "--path", existingWorktree.path, "--label", input.title, "--no-focus"]
+            : ["worktree", "create", "--cwd", repository.root, "--branch", branch, "--base", base.commit, "--label", input.title, "--no-focus"],
           cwd: repository.root,
           ...(signal ? { signal } : {}),
         },
-        "Worktree creation failed; no agent was started.",
+        existingWorktree
+          ? "Existing worktree could not be opened; no agent was started."
+          : "Worktree creation failed; no agent was started.",
       )
       const created = parseWorktreeResult(output)
-      this.log("info", "Herdr worktree workspace created", {
+      partial.workspaceId = created.workspaceId
+      partial.paneId = created.paneId
+      if (created.path) partial.path = created.path
+      this.log("info", existingWorktree
+        ? "Herdr worktree workspace opened"
+        : "Herdr worktree workspace created", {
         workspaceId: created.workspaceId,
         paneId: created.paneId,
         ...(created.path ? { worktreePath: created.path } : {}),
       })
+      if (input.mode === "pull_request") {
+        await runStage(this.dependencies, {
+          executable: "git",
+          args: ["branch", "--set-upstream-to", `origin/${branch}`, branch],
+          cwd: created.path ?? existingWorktree?.path ?? repository.root,
+          ...(signal ? { signal } : {}),
+        }, `Could not configure ${JSON.stringify(branch)} to push to the existing pull request branch.`)
+      }
       return created
     })
 
+    if (!base) throw new DispatchError("Dispatch target could not be resolved.")
     partial.workspaceId = worktree.workspaceId
     partial.paneId = worktree.paneId
     if (worktree.path) partial.path = worktree.path
     if (!worktree.path) throw new DispatchError("Herdr did not report the worktree path required for dispatch.")
-    await this.assertLinkedWorktree(repository, worktree.path, input.branch, base.commit, signal)
+    await this.assertLinkedWorktree(repository, worktree.path, branch, reusedWorktree ? undefined : base.commit, signal)
     await this.assertRootStateUnchanged(repository.root, rootState, signal)
     this.log("debug", "Linked worktree verified", {
       workspaceId: worktree.workspaceId,
-      branch: input.branch,
+      branch,
       worktreePath: worktree.path,
     })
 
@@ -409,24 +503,26 @@ export class HerdrDispatcher {
       linkedEnvironmentFiles,
     })
 
-    this.log("info", "Installing worktree dependencies", {
-      workspaceId: worktree.workspaceId,
-      worktreePath: worktree.path,
-    })
-    await runStage(
-      this.dependencies,
-      {
-        executable: "pnpm",
-        args: ["install"],
-        cwd: worktree.path,
-        ...(signal ? { signal } : {}),
-      },
-      "The worktree exists, but pnpm install failed; no agent was started and no cleanup was attempted.",
-    )
-    this.log("info", "Worktree dependencies installed", {
-      workspaceId: worktree.workspaceId,
-      worktreePath: worktree.path,
-    })
+    if (!reusedWorktree) {
+      this.log("info", "Installing worktree dependencies", {
+        workspaceId: worktree.workspaceId,
+        worktreePath: worktree.path,
+      })
+      await runStage(
+        this.dependencies,
+        {
+          executable: "pnpm",
+          args: ["install"],
+          cwd: worktree.path,
+          ...(signal ? { signal } : {}),
+        },
+        "The worktree exists, but pnpm install failed; no agent was started and no cleanup was attempted.",
+      )
+      this.log("info", "Worktree dependencies installed", {
+        workspaceId: worktree.workspaceId,
+        worktreePath: worktree.path,
+      })
+    }
 
     partial.phase = "panes"
     const shellPaneId = await this.ensurePaneLayout(repository.root, worktree, signal)
@@ -438,7 +534,7 @@ export class HerdrDispatcher {
     })
 
     partial.phase = "agent"
-    const agentName = (this.dependencies.createAgentName ?? createAgentName)(input.branch)
+    const agentName = (this.dependencies.createAgentName ?? createAgentName)(branch)
     partial.agentName = agentName
     await this.startAgentWhenShellReady({
       executable: "herdr",
@@ -449,22 +545,25 @@ export class HerdrDispatcher {
     this.log("info", "Build agent started", {
       agentName,
       workspaceId: worktree.workspaceId,
-      branch: input.branch,
+      branch,
     })
 
     partial.phase = "plan"
     const stateBeforePlan = await this.readAgentState(repository.root, agentName, signal)
-    await this.deliverPlan(repository.root, worktree.path, input, base, agentName, stateBeforePlan, signal)
+    await this.deliverPlan(repository.root, worktree.path, input, branch, base, pullRequest, agentName, stateBeforePlan, signal)
     this.log("info", "Implementation plan delivered", {
       agentName,
-      branch: input.branch,
+      branch,
       workspaceId: worktree.workspaceId,
     })
     return {
+      mode: input.mode,
       title: input.title,
-      branch: input.branch,
+      branch,
       base: base.label,
       baseCommit: base.commit,
+      ...(pullRequest ? { pullRequest: pullRequest.url } : {}),
+      reusedWorktree,
       workspaceId: worktree.workspaceId,
       paneId: worktree.paneId,
       shellPaneId,
@@ -503,12 +602,17 @@ export class HerdrDispatcher {
     return shellPaneId
   }
 
-  private async deliverPlan(repositoryRoot: string, worktreePath: string, input: ValidatedDispatchInput, base: ResolvedBase, agentName: string, stateBeforePlan: AgentState, signal?: AbortSignal): Promise<void> {
+  private async deliverPlan(repositoryRoot: string, worktreePath: string, input: ValidatedDispatchInput, branch: string, base: ResolvedBase, pullRequest: ResolvedPullRequest | undefined, agentName: string, stateBeforePlan: AgentState, signal?: AbortSignal): Promise<void> {
     const plan = [
       "Herdr implementation assignment: workspace setup is COMPLETE.",
       `Assigned directory: ${worktreePath}`,
-      `Assigned branch: ${input.branch}`,
+      `Assigned branch: ${branch}`,
       `Resolved base: ${base.label} at ${base.commit}`,
+      ...(pullRequest ? [
+        `Existing pull request: ${pullRequest.url}`,
+        `Existing pull request head: origin/${branch}`,
+        "Continue this pull request and push completed commits to its existing head branch. Do not create a replacement branch or pull request.",
+      ] : []),
       "Implement in this directory and branch. Do not create another worktree, branch, or agent.",
       "",
       "Agreed implementation plan:",
@@ -600,7 +704,7 @@ export class HerdrDispatcher {
     if (actual.branch !== expected.branch || actual.commit !== expected.commit || actual.status !== expected.status) throw new DispatchError("The primary checkout changed during dispatch. The plugin did not reset or repair it.")
   }
 
-  private async assertLinkedWorktree(repository: RepositoryInfo, worktreePath: string, expectedBranch: string, expectedCommit: string, signal?: AbortSignal): Promise<void> {
+  private async assertLinkedWorktree(repository: RepositoryInfo, worktreePath: string, expectedBranch: string, expectedCommit: string | undefined, signal?: AbortSignal): Promise<void> {
     const canonicalPath = await this.dependencies.realpath(worktreePath)
     if (canonicalPath === repository.root) throw new DispatchError("Herdr returned the primary checkout as the dispatch target. No agent was started.")
     const output = (args: readonly string[], failure: string) => runStage(this.dependencies, { executable: "git", args, cwd: canonicalPath, ...(signal ? { signal } : {}) }, failure)
@@ -614,7 +718,7 @@ export class HerdrDispatcher {
     const worktreeRoot = await this.dependencies.realpath(root.trim())
     const gitPath = await this.dependencies.realpath(path.resolve(canonicalPath, gitDir.trim()))
     const commonPath = await this.dependencies.realpath(path.resolve(canonicalPath, commonDir.trim()))
-    if (worktreeRoot !== canonicalPath || commonPath !== repository.commonDir || gitPath === commonPath || branch.trim() !== expectedBranch || commit.trim() !== expectedCommit) throw new DispatchError("Herdr returned a checkout that does not match the requested linked worktree, branch, and base commit. No agent was started.")
+    if (worktreeRoot !== canonicalPath || commonPath !== repository.commonDir || gitPath === commonPath || branch.trim() !== expectedBranch || (expectedCommit !== undefined && commit.trim() !== expectedCommit)) throw new DispatchError("Herdr returned a checkout that does not match the requested linked worktree, branch, and base commit. No agent was started.")
   }
 
   private async linkEnvironmentFiles(repositoryRoot: string, worktreePath: string, signal?: AbortSignal): Promise<number> {
@@ -670,6 +774,143 @@ export class HerdrDispatcher {
     }
 
     return linked
+  }
+
+  private async resolvePullRequest(repositoryRoot: string, reference: string, signal?: AbortSignal): Promise<ResolvedPullRequest> {
+    const selector = /^#\d+$/u.test(reference) ? reference.slice(1) : reference
+    if (!/^\d+$/u.test(selector) && !repositoryKey(selector, true)) {
+      throw new DispatchError("Pull request must be a GitHub pull request URL or positive pull request number.")
+    }
+    const repositoryOutput = await runStage(this.dependencies, {
+      executable: "gh",
+      args: ["repo", "view", "--json", "url"],
+      cwd: repositoryRoot,
+      ...(signal ? { signal } : {}),
+    }, "Could not identify the current GitHub repository.")
+    let repositoryUrl: unknown
+    try {
+      repositoryUrl = (JSON.parse(repositoryOutput) as { url?: unknown }).url
+    } catch (error) {
+      throw new DispatchError("gh repo view returned malformed JSON.", { cause: error })
+    }
+    const currentRepository = typeof repositoryUrl === "string" ? repositoryKey(repositoryUrl) : undefined
+    if (!currentRepository) throw new DispatchError("gh repo view did not return a valid repository URL.")
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const output = await runStage(this.dependencies, {
+        executable: "gh",
+        args: [
+          "pr", "view", selector,
+          "--json", "number,url,state,isDraft,headRefName,headRefOid,isCrossRepository,headRepository",
+        ],
+        cwd: repositoryRoot,
+        ...(signal ? { signal } : {}),
+      }, `Could not resolve pull request ${JSON.stringify(reference)}.`)
+      let value: Record<string, unknown>
+      try {
+        value = JSON.parse(output) as Record<string, unknown>
+      } catch (error) {
+        throw new DispatchError("gh pr view returned malformed JSON.", { cause: error })
+      }
+      const number = value.number
+      const url = value.url
+      const branch = value.headRefName
+      const commit = value.headRefOid
+      const headRepository = value.headRepository as { nameWithOwner?: unknown } | null | undefined
+      if (
+        typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0 ||
+        typeof url !== "string" || repositoryKey(url, true) !== currentRepository ||
+        typeof branch !== "string" || !branch ||
+        typeof commit !== "string" || !/^[0-9a-f]{40,64}$/iu.test(commit) ||
+        typeof headRepository?.nameWithOwner !== "string"
+      ) {
+        throw new DispatchError("Pull request metadata is incomplete or does not belong to the current repository.")
+      }
+      if (value.state !== "OPEN") {
+        throw new DispatchError(`Pull request #${number} is ${String(value.state).toLowerCase()} and cannot be continued.`)
+      }
+      if (value.isCrossRepository !== false) {
+        throw new DispatchError("Pull requests from forks are not supported. Continue a branch hosted in the current repository.")
+      }
+      const fetched = await this.fetchRemoteBranch(repositoryRoot, "origin", branch, signal)
+      if (fetched.commit === commit) return { number, url, branch, commit }
+      if (attempt === 2) {
+        throw new DispatchError(`Pull request #${number} changed while it was being prepared. Run /feature again.`)
+      }
+      this.log("debug", "Pull request head changed during dispatch; refreshing once", {
+        pullRequest: url,
+        advertisedCommit: commit,
+        fetchedCommit: fetched.commit,
+      })
+    }
+    throw new DispatchError("Pull request could not be resolved.")
+  }
+
+  private async findExistingWorktree(repository: RepositoryInfo, branch: string, signal?: AbortSignal): Promise<ExistingWorktreeInfo | undefined> {
+    const output = await runStage(this.dependencies, {
+      executable: "herdr",
+      args: ["worktree", "list", "--cwd", repository.root],
+      cwd: repository.root,
+      ...(signal ? { signal } : {}),
+    }, "Could not list existing Herdr worktrees.")
+    const matching = parseWorktreeListResult(output).find((worktree) => worktree.branch === branch)
+    if (!matching) return undefined
+    const matchingPath = await this.dependencies.realpath(matching.path)
+    if (matchingPath === repository.root || matching.isLinkedWorktree === false) {
+      throw new DispatchError(`Pull request branch ${JSON.stringify(branch)} is checked out in the primary checkout and cannot be dispatched.`)
+    }
+    return { ...matching, path: matchingPath }
+  }
+
+  private async prepareExistingPullRequestWorktree(repositoryRoot: string, worktree: ExistingWorktreeInfo, remoteCommit: string, signal?: AbortSignal): Promise<void> {
+    const agents = parseAgentList(await runStage(this.dependencies, {
+      executable: "herdr",
+      args: ["agent", "list"],
+      cwd: repositoryRoot,
+      ...(signal ? { signal } : {}),
+    }, "Could not inspect agents attached to the existing pull request worktree."))
+    if (agents.some((agent) => agent.status !== "idle" && (
+      agent.cwd === worktree.path ||
+      (worktree.openWorkspaceId !== undefined && agent.workspaceId === worktree.openWorkspaceId)
+    ))) {
+      throw new DispatchError("The pull request worktree already has an active agent.")
+    }
+    const status = await runStage(this.dependencies, {
+      executable: "git",
+      args: ["status", "--porcelain", "--untracked-files=all"],
+      cwd: worktree.path,
+      ...(signal ? { signal } : {}),
+    }, "Could not inspect the existing pull request worktree.")
+    if (status.trim()) throw new DispatchError("The existing pull request worktree is dirty and cannot be reused safely.")
+
+    const localCommit = (await runStage(this.dependencies, {
+      executable: "git",
+      args: ["rev-parse", "--verify", "HEAD"],
+      cwd: worktree.path,
+      ...(signal ? { signal } : {}),
+    }, "Could not read the existing pull request worktree commit.")).trim()
+    if (localCommit === remoteCommit) return
+    if (await commandSucceeds(this.dependencies, {
+      executable: "git",
+      args: ["merge-base", "--is-ancestor", localCommit, remoteCommit],
+      cwd: worktree.path,
+      ...(signal ? { signal } : {}),
+    })) {
+      await runStage(this.dependencies, {
+        executable: "git",
+        args: ["merge", "--ff-only", remoteCommit],
+        cwd: worktree.path,
+        ...(signal ? { signal } : {}),
+      }, "Could not fast-forward the existing pull request worktree.")
+      return
+    }
+    if (await commandSucceeds(this.dependencies, {
+      executable: "git",
+      args: ["merge-base", "--is-ancestor", remoteCommit, localCommit],
+      cwd: worktree.path,
+      ...(signal ? { signal } : {}),
+    })) return
+    throw new DispatchError("The existing pull request worktree has diverged from the remote pull request branch.")
   }
 
   private async resolveBase(repositoryRoot: string, explicitBase: string | undefined, signal?: AbortSignal): Promise<ResolvedBase> {
@@ -730,10 +971,13 @@ export function formatDispatchResult(result: DispatchResult): string {
   return [
     "Plan delivered to an OpenCode Build agent in Herdr.",
     "Status: dispatched",
+    `Mode: ${result.mode}`,
     `Feature: ${result.title}`,
     `Branch: ${result.branch}`,
+    ...(result.pullRequest ? [`Pull request: ${result.pullRequest}`] : []),
     `Base: ${result.base}`,
     `Base commit: ${result.baseCommit}`,
+    `Reused worktree: ${result.reusedWorktree ? "yes" : "no"}`,
     `Workspace ID: ${result.workspaceId}`,
     `Pane ID: ${result.paneId}`,
     `Agent: ${result.agentName}`,
