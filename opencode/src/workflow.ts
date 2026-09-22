@@ -4,19 +4,19 @@ import type { Config } from "@opencode-ai/plugin"
 export const IMPLEMENTOR_AGENT = "build"
 export const IMPLEMENTOR_VARIANT = "medium"
 
-export const FEATURE_COMMAND_TEMPLATE = `Dispatch the single agreed implementation outcome from this conversation to Herdr. This /feature invocation is explicit authorization to dispatch; ordinary planning conversation is not.
+export const FEATURE_COMMAND_TEMPLATE = `Dispatch the agreed implementation outcome or outcomes from this conversation to Herdr. This /feature invocation is explicit authorization to dispatch; ordinary planning conversation is not.
 
 Optional scope filter or clarification: $ARGUMENTS
 
-Use the latest settled plan plus the user's subsequent corrections. Copy that plan's implementation body rather than paraphrasing or enriching it. Remove conversational lead-ins if needed. Apply later corrections, or append a short clarification section. Do not accumulate requirements from earlier proposals after a narrowed plan replaces them. Only bring earlier details forward when the settled plan explicitly depends on them (for example, replace "use the earlier profiles" with those actual profiles). Do not add new architecture, acceptance criteria, tests, or verification work to make a short plan look complete. A precise paragraph is enough for a small change. Do not resurrect rejected alternatives.
+Use the latest settled plan plus the user's subsequent corrections. Dispatch one feature for a cohesive outcome, or multiple features only when the settled scope explicitly identifies independently reviewable outcomes. Do not split one cohesive change merely to create a batch, and do not dispatch later backlog just because it appears in an earlier plan. Give each feature a stable ID such as F1 and copy that feature's implementation body rather than paraphrasing or enriching it. Remove conversational lead-ins if needed. Apply later corrections, or append a short clarification section. Do not accumulate requirements from earlier proposals after a narrowed plan replaces them. Only bring earlier details forward when the settled plan explicitly depends on them. Do not add new architecture, acceptance criteria, tests, or verification work to make a short plan look complete. A precise paragraph is enough for a small change. Do not resurrect rejected alternatives.
 
 If no implementation-ready scope exists, or a material product/design decision remains unresolved, ask the user rather than choose for them. If you finish this turn without dispatch, ask them to run /feature again when ready.
 
-Read applicable project instructions. Ask about concrete conflicts with the agreed plan. Inspect Git metadata with inspect_herdr_repository before dispatch. If this invocation explicitly supplies one existing pull request URL or number, pass it unchanged as pullRequest and do not supply branch or base. Do not infer a pull request merely because one is mentioned elsewhere in the plan or conversation; ask if multiple references are supplied. Otherwise dispatch one new branch from a freshly fetched origin default unless another base is explicitly requested. A primary checkout branch such as develop/main is a base, not a dispatch target. Dirty-root approval does not copy uncommitted files; explain this and obtain explicit approval when needed.
+Read applicable project instructions. Ask about concrete conflicts with the agreed scope or unclear boundaries between features. Inspect Git metadata with inspect_herdr_repository before dispatch. For each feature that explicitly supplies an existing pull request URL or number, pass it unchanged as pullRequest and do not supply branch or base. Do not infer a pull request merely because one is mentioned elsewhere. Otherwise assign a distinct new branch from a freshly fetched origin default unless another base is explicitly requested. A primary checkout branch such as develop/main is a base, not a dispatch target. Dirty-root approval applies to the full batch and does not copy uncommitted files; explain this and obtain explicit approval when needed.
 
 Put branch creation, fetching, and worktree setup intent in the tool's Git fields, not as tasks in the implementation plan. The plugin completes that setup before the implementor receives the plan. Always launch the implementor with the orchestrator session's active model; do not carry the orchestrator's current agent into the worktree.
 
-Call dispatch_feature_to_herdr once, using the invocation authorization provided by the plugin. Report the result and any partial resources. Do not retry an unclear or failed launch. Delivery is not implementation completion. Remain the orchestrator in this checkout.`
+Call dispatch_features_to_herdr once, using the invocation authorization provided by the plugin and preserving the agreed feature order. A one-feature dispatch is a one-element batch. Report every result and any partial resources. Do not retry an unclear or failed launch. Delivery is not implementation completion. Remain the orchestrator in this checkout.`
 
 export const IMPLEMENTOR_PROMPT = `You implement the agreed handoff in this worktree. Workspace setup is already complete. Use the assigned current directory and branch. Do not create another worktree or branch, re-fetch a newer base, or move the work to another checkout to repeat setup instructions in the plan. If the assignment is inconsistent, report it before proceeding. The handoff is the settled scope, not an invitation to redesign it.
 
@@ -71,14 +71,14 @@ export function configureFeatureWorkflow(config: Config, linkedWorktree = false)
       ...config.agent.build,
       permission: {
         ...config.agent.build?.permission,
-        dispatch_feature_to_herdr: "deny",
+        dispatch_features_to_herdr: "deny",
       } as NonNullable<Config["permission"]>,
     }
     delete config.command.feature
     return
   }
   config.command.feature = {
-    description: "Dispatch the agreed plan to a new branch or existing pull request.",
+    description: "Dispatch one or more agreed plans to Herdr worktrees.",
     subtask: false,
     template: FEATURE_COMMAND_TEMPLATE,
   }
@@ -86,7 +86,7 @@ export function configureFeatureWorkflow(config: Config, linkedWorktree = false)
   if (typeof config.permission === "object") {
     Object.assign(config.permission, {
       inspect_herdr_repository: "allow",
-      dispatch_feature_to_herdr: "allow",
+      dispatch_features_to_herdr: "allow",
     })
   }
 }

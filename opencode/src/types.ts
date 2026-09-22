@@ -26,6 +26,15 @@ export interface DispatchInput {
   allowDirtyRoot?: boolean
 }
 
+export interface BatchDispatchFeature extends Omit<DispatchInput, "allowDirtyRoot"> {
+  id: string
+}
+
+export interface BatchDispatchInput {
+  features: BatchDispatchFeature[]
+  allowDirtyRoot?: boolean
+}
+
 export type DispatchMode = "new" | "pull_request"
 
 export interface RepositoryInfo {
@@ -60,6 +69,30 @@ export interface DispatchPartialState {
   shellPaneId?: string
   path?: string
   agentName?: string
+}
+
+export type BatchFeatureResult =
+  | {
+      id: string
+      title: string
+      target: string
+      status: "fulfilled"
+      result: DispatchResult
+    }
+  | {
+      id: string
+      title: string
+      target: string
+      status: "rejected"
+      error: string
+      partial?: DispatchPartialState
+    }
+
+export interface BatchDispatchResult {
+  requested: number
+  succeeded: number
+  failed: number
+  results: BatchFeatureResult[]
 }
 
 export type DispatchLogLevel = "debug" | "info" | "warn" | "error"

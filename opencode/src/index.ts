@@ -3,7 +3,8 @@ import path from "node:path"
 
 import { tool, type Plugin } from "@opencode-ai/plugin"
 
-import { HerdrDispatcher, formatDispatchResult } from "./dispatch.js"
+import { dispatchBatch, formatBatchDispatchResult, MAX_BATCH_SIZE } from "./batch.js"
+import { HerdrDispatcher } from "./dispatch.js"
 import { DispatchError } from "./errors.js"
 import { RepositoryMaintenance } from "./maintenance.js"
 import { NodeCommandRunner } from "./process.js"
@@ -16,6 +17,15 @@ import {
   IMPLEMENTOR_PROMPT,
   IMPLEMENTOR_VARIANT,
 } from "./workflow.js"
+
+const dispatchFeatureSchema = {
+  id: tool.schema.string().min(1).max(20).describe("Stable feature ID such as F1"),
+  title: tool.schema.string().min(1).max(80).describe("Short feature title"),
+  branch: tool.schema.string().optional().describe("New local Git branch; omit when continuing a pull request"),
+  pullRequest: tool.schema.string().optional().describe("Existing same-repository pull request URL or number; mutually exclusive with branch and base"),
+  plan: tool.schema.string().describe("Implementation-ready handoff for this feature only"),
+  base: tool.schema.string().optional().describe("Optional explicit Git base ref for a new branch"),
+}
 
 const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
   const authorization = new FeatureAuthorization()
@@ -130,16 +140,12 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
           ].join("\n")
         },
       }),
-      dispatch_feature_to_herdr: tool({
-        description: "Dispatch one agreed implementation plan to a new branch or explicitly supplied existing pull request after /feature authorization.",
+      dispatch_features_to_herdr: tool({
+        description: "Dispatch one or more independently agreed implementation plans after /feature authorization.",
         args: {
           authorization: tool.schema.string().describe("Exact feature_authorization token from the current /feature invocation"),
-          title: tool.schema.string().min(1).max(80).describe("Short feature title"),
-          branch: tool.schema.string().optional().describe("New local Git branch; omit when continuing a pull request"),
-          pullRequest: tool.schema.string().optional().describe("Existing same-repository pull request URL or number; mutually exclusive with branch and base"),
-          plan: tool.schema.string().describe("The implementation-ready handoff for this feature"),
-          base: tool.schema.string().optional().describe("Optional explicit Git base ref; defaults to freshly fetched origin HEAD"),
-          allowDirtyRoot: tool.schema.boolean().optional().describe("Explicitly allow dispatch when the primary checkout is dirty"),
+          features: tool.schema.array(tool.schema.object(dispatchFeatureSchema)).min(1).max(MAX_BATCH_SIZE).describe("Independent features in the agreed order"),
+          allowDirtyRoot: tool.schema.boolean().optional().describe("Explicitly allow every dispatch when the primary checkout is dirty"),
         },
         async execute(args, context) {
           const messages = await client.session.messages({ path: { id: context.sessionID }, query: { directory } })
@@ -158,18 +164,28 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
           await mkdir(receiptDirectory, { recursive: true })
           const receiptID = args.authorization
           const input = {
-            title: args.title,
-            plan: args.plan,
-            ...(args.branch === undefined ? {} : { branch: args.branch }),
-            ...(args.pullRequest === undefined ? {} : { pullRequest: args.pullRequest }),
-            ...(args.base === undefined ? {} : { base: args.base }),
+            features: args.features.map((feature) => ({
+              id: feature.id,
+              title: feature.title,
+              plan: feature.plan,
+              ...(feature.branch === undefined ? {} : { branch: feature.branch }),
+              ...(feature.pullRequest === undefined ? {} : { pullRequest: feature.pullRequest }),
+              ...(feature.base === undefined ? {} : { base: feature.base }),
+            })),
             ...(args.allowDirtyRoot === undefined ? {} : { allowDirtyRoot: args.allowDirtyRoot }),
           }
           await appendFile(receiptPath, `${JSON.stringify({ id: receiptID, state: "requested", time: new Date().toISOString(), sessionID: context.sessionID, input })}\n`, { mode: 0o600 })
           try {
-            const result = await dispatcher.dispatch(context.directory, input, implementationModel, context.abort)
+            const result = await dispatchBatch(
+              dispatcher,
+              context.directory,
+              input,
+              implementationModel,
+              context.abort,
+              async (feature, index) => appendFile(receiptPath, `${JSON.stringify({ id: receiptID, state: "feature_result", time: new Date().toISOString(), index, feature })}\n`, { mode: 0o600 }),
+            )
             await appendFile(receiptPath, `${JSON.stringify({ id: receiptID, state: "completed", time: new Date().toISOString(), result })}\n`, { mode: 0o600 })
-            return `${formatDispatchResult(result)}\nDispatch receipt: ${receiptID}`
+            return `${formatBatchDispatchResult(result)}\nDispatch receipt: ${receiptID}`
           } catch (error) {
             const dispatchError = error instanceof DispatchError ? error : new DispatchError(String(error))
             await appendFile(receiptPath, `${JSON.stringify({ id: receiptID, state: "failed", time: new Date().toISOString(), error: dispatchError.message, partial: dispatchError.partial })}\n`, { mode: 0o600 })
