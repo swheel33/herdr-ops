@@ -81,6 +81,29 @@ async function existingBranch(root: string, branch: string, remote: string): Pro
   if (!await isAncestor(root, remote, local)) throw new Error(`Local branch ${branch} has diverged from the pull request`)
 }
 
+async function branchCommit(root: string, branch: string): Promise<{ base: string; upstream?: string; existing: boolean }> {
+  let local: string | undefined
+  try {
+    local = await git(root, "rev-parse", "--verify", `refs/heads/${branch}^{commit}`)
+  } catch {
+    // The branch may only exist on origin, or may be a new name.
+  }
+  const remotes = (await git(root, "remote")).split("\n")
+  if (remotes.includes("origin")) {
+    const head = await git(root, "ls-remote", "--heads", "origin", `refs/heads/${branch}`)
+    if (head) {
+      await git(root, "fetch", "--no-tags", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`)
+      const remote = await git(root, "rev-parse", `refs/remotes/origin/${branch}`)
+      if (local && !await isAncestor(root, local, remote) && !await isAncestor(root, remote, local)) {
+        throw new Error(`Local branch ${branch} has diverged from origin/${branch}`)
+      }
+      return { base: local && await isAncestor(root, remote, local) ? local : remote, upstream: `origin/${branch}`, existing: true }
+    }
+  }
+  if (local) return { base: local, existing: true }
+  return { base: await baseCommit(root), existing: false }
+}
+
 async function linkEnvironment(root: string, tree: string): Promise<void> {
   const { stdout } = await execFile("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", ":(glob).env", ":(glob).env.*", ":(glob)**/.env", ":(glob)**/.env.*"], { cwd: root, encoding: "buffer", maxBuffer: 4 * 1024 * 1024 })
   for (const relative of stdout.toString().split("\0").filter(Boolean)) {
@@ -150,11 +173,11 @@ export default Plugin.define({
       if (moving || route.type !== "session" || route.sessionID !== sessionID) return
       void (async () => {
         const session = await ctx.client.session.get({ sessionID })
-        const request = await feature.take({ sessionID }, { location: session.location }) as { pending: boolean; branch?: string }
+        const request = await feature.take({ sessionID }, { location: session.location }) as { pending: boolean; branch?: string; pr?: string }
         if (!request.pending) return
         const branch = request.branch || `feature/${slug(session.title ?? "work")}-${Date.now().toString(36)}`
         resumeAfterMove = true
-        ctx.keymap.dispatch("herdr.feature", branch)
+        ctx.keymap.dispatch("herdr.feature", request.pr ? `continue ${request.pr}` : branch)
       })().catch((error) => ctx.ui.toast.show({ title: "Feature handoff failed", message: message(error), variant: "error" }))
     })
     const slot = ctx.ui.slot({ append: "app", render: () => {
@@ -201,24 +224,26 @@ export default Plugin.define({
             if (branch === undefined) return
             const selected = branch.trim() || suggested
             await git(root, "check-ref-format", "--branch", selected)
+            if (await git(root, "branch", "--show-current") === selected) throw new Error(`Branch ${selected} is checked out in the primary checkout; cannot open it in another worktree`)
             const title = session.title || selected
-            const base = pr?.commit ?? await baseCommit(root)
+            const target = pr ? { base: pr.commit, upstream: `origin/${selected}`, existing: true } : await branchCommit(root, selected)
+            const base = target.base
             let existing: { path: string; open_workspace_id?: string; is_prunable?: boolean } | undefined
-            if (pr) {
+            if (target.existing) {
               const worktrees = (await herdr(root, "worktree", "list", "--cwd", root)).worktrees as Array<{ branch: string; path: string; open_workspace_id?: string; is_prunable?: boolean }>
               existing = worktrees.find((tree) => tree.branch === selected)
-              if (existing?.is_prunable || existing?.open_workspace_id) throw new Error("The pull request worktree is already open or stale; inspect it before continuing")
+              if (existing?.is_prunable || existing?.open_workspace_id) throw new Error("The branch worktree is already open or stale; inspect it before continuing")
               if (existing && await git(existing.path, "status", "--porcelain", "--untracked-files=all")) {
-                throw new Error("The pull request worktree has uncommitted changes")
+                throw new Error("The branch worktree has uncommitted changes")
               }
               if (existing) {
                 const local = await git(existing.path, "rev-parse", "HEAD")
                 if (local !== base && await isAncestor(existing.path, local, base)) {
                   await git(existing.path, "merge", "--ff-only", base)
                 } else if (local !== base && !await isAncestor(existing.path, base, local)) {
-                  throw new Error("The pull request worktree has diverged from its remote head")
+                  throw new Error("The branch worktree has diverged from its remote head")
                 }
-              } else {
+              } else if (target.upstream) {
                 await existingBranch(root, selected, base)
               }
             }
@@ -233,7 +258,7 @@ export default Plugin.define({
             if (await git(tree, "rev-parse", "--abbrev-ref", "HEAD") !== selected || (!pr && await git(tree, "rev-parse", "HEAD") !== base)) {
               throw new Error("Herdr worktree does not match the selected branch and base")
             }
-            if (pr) await git(tree, "branch", "--set-upstream-to", `origin/${selected}`, selected)
+            if (target.upstream) await git(tree, "branch", "--set-upstream-to", target.upstream, selected)
             await linkEnvironment(root, tree)
             if (!existing) await installDependencies(tree)
             await ctx.client.session.move({ sessionID, directory: tree })
