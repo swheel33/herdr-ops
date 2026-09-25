@@ -1,106 +1,39 @@
-# opencode-herdr-dispatch
+# Same-session Herdr feature worktrees (OpenCode v2)
 
-An OpenCode plugin for turning agreed implementation plans into background Herdr worktrees and OpenCode Build agents.
-
-## Scope
-
-The plugin intentionally handles one workflow:
-
-1. `/feature` authorizes one batch of one to eight independent features.
-2. For each feature, the plugin creates a new branch or checks out one explicitly supplied existing pull request branch in a linked worktree.
-3. It links ignored local environment files into each new worktree.
-4. It installs worktree dependencies with `pnpm install`.
-5. It starts one Build agent per feature in a 70/30 agent and shell layout.
-6. It delivers each plan and waits for that agent to begin working.
-7. It reports each feature independently and continues the batch after failures.
-8. It periodically refreshes pull-request metadata, safely advances local `develop`, and force-removes inactive worktrees for closed or merged pull requests.
-
-Arbitrary branch continuation and fork pull requests are outside this plugin's scope.
-
-## Requirements
-
-- OpenCode V1
-- Herdr 0.9.1
-- Herdr's OpenCode integration
-- Git
-- GitHub CLI (`gh`), authenticated for PR dispatch and metadata maintenance
-- Node.js 20 or newer
-- `pnpm` for installing dependencies in new worktrees
-
-Install Herdr's OpenCode integration once:
-
-```sh
-herdr integration install opencode
-```
+This is a terminal-only OpenCode v2 plugin. `/feature` creates a Herdr worktree after planning, moves the **existing** root session into that checkout, resumes its ID in a new Herdr workspace, and focuses it. There is no plan copy or second implementor session. The old Herdr tab is closed only when it contains that conversation alone **and** the primary workspace has another tab. Otherwise it stays open on OpenCode's blank home view, so the primary workspace and its linked worktrees remain available.
 
 ## Install
 
+Install OpenCode v2 and Herdr's OpenCode integration on the host that owns the checkout. The `opencode` command visible to Herdr panes must resolve to v2. From this directory:
+
 ```sh
-cd ~/Work/herdr-ops/opencode
 npm ci
 npm run typecheck
 npm run build
 ```
 
-Register the resulting `dist/index.js` in `~/.config/opencode/opencode.json` using an absolute `file://` URL, then restart OpenCode:
+Register the Herdr v2 TUI integration and the CLI-only feature command in `~/.config/opencode/cli.json`:
 
-```jsonc
+```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    "file:///home/YOUR_USER/Work/herdr-ops/opencode/dist/index.js"
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": [
+    "./herdr-opencode",
+    "file:///home/YOUR_USER/Work/herdr-ops/opencode"
   ]
 }
 ```
 
-The plugin registers `/feature`, its Build-agent settings, and its dispatch tool at runtime. Do not install a separate command file or agent definition.
+The `./herdr-opencode` entry points at Herdr's managed integration, relative to the global config. Run `herdr integration install opencode` if it is missing. Restart OpenCode after installing or rebuilding the CLI plugin. V1 sessions cannot be relocated into v2: start a new v2 planning conversation.
 
-## Model Selection
+To keep the terminal-derived appearance from a V1 `"theme": "system"` setting, add `"theme": { "name": "system", "mode": "system" }` to `cli.json`. V2 does not read V1's `tui.json` theme setting.
 
-The implementor inherits the active provider/model from the orchestrator session
-that invokes `/feature`. Different sessions can dispatch different models, and no
-separate implementor model setting is required. OpenCode's configured `model` is
-used as a fallback when the session does not provide one.
+## Use
 
-## Usage
+Plan in a Herdr-hosted root OpenCode v2 conversation in the primary checkout, then run `/feature`. Supply a Git branch name as an optional argument (`/feature feature/my-change`); otherwise enter one in the prompt or accept the suggested name. The primary checkout must be clean. The new branch starts at a freshly fetched `origin` default commit, or local `HEAD` when there is no origin. Ignored `.env` files are symlinked from the primary checkout, and `pnpm install --frozen-lockfile` runs when there is a `pnpm-lock.yaml`.
 
-Run `/feature` in the same conversation as the settled plan. The command is explicit authorization; ordinary conversation cannot dispatch. The primary checkout must be clean unless the user explicitly approves `allowDirtyRoot`, and the plugin never resets or repairs it.
+To resume an existing same-repository open pull request, use `/feature continue 123` or `/feature continue https://github.com/OWNER/REPO/pull/123`. A clean, closed worktree can be reopened; already-open or stale worktrees require manual inspection. Otherwise its branch is verified against the fetched PR head before a new worktree is created.
 
-When the settled scope explicitly contains independent outcomes, one `/feature` invocation dispatches them as an ordered batch of up to eight worktrees. Dispatches run sequentially, and a validation, setup, or launch failure for one feature does not block the remaining features. A normal single-feature dispatch uses the same path as a one-item batch. Cohesive changes remain one feature, and unrelated backlog is not inferred from earlier plans.
+The previous V1 plugin's background batch dispatch, PR metadata timer, and automatic worktree cleanup are not part of this same-session CLI command. Manage completed worktrees explicitly with Herdr; this command never force-removes uncommitted changes.
 
-To continue an existing pull request, include its URL or number in the invocation:
-
-```text
-/feature continue https://github.com/OWNER/REPOSITORY/pull/123
-```
-
-The plugin resolves the open pull request with `gh`, freshly fetches its head from `origin`, and creates or safely reuses a linked worktree on that exact branch. It configures `origin/<branch>` as the upstream and instructs the implementor to push completed commits to the existing pull request instead of creating another branch or pull request. Closed, merged, unrelated, or fork pull requests are rejected.
-
-An existing worktree is reused only when it is clean, has no active agent, and has not diverged from the pull request. A worktree behind the remote is fast-forwarded; one with clean local commits ahead of the remote is preserved. A fully evacuated checkout, where every tracked file has disappeared, is force-removed and recreated for an open pull request. Prunable registrations are repaired when possible or removed with a targeted forced worktree removal before recreation. Other dirty open-PR worktrees remain blocked. A surviving local PR branch without a registered worktree is verified against the fetched PR head before Herdr recreates its linked worktree; branches with divergent commits are rejected rather than reset.
-
-The default base is the freshly fetched branch advertised by `origin/HEAD`. An explicit base may be supplied when needed. All commands run on the host owning the checkout, which is also the supported SSH setup.
-
-The batch request and ordered results are recorded in `<git-common-dir>/opencode-herdr-dispatch/handoffs.jsonl`. Failed features include any workspace, pane, or agent identifiers already created. A submitted plan whose agent does not become working is not reported as dispatched and is never retried automatically.
-
-Agents in linked worktrees receive the implementation instructions and cannot invoke `/feature` recursively.
-
-OpenCode root-session titles are synchronized to their Herdr tabs, including retrying while Herdr registers the agent. Titles owned by the plugin are cleared on disposal only when the tab still has that title. Dispatch lifecycle events are emitted through OpenCode application logs; implementation plans and environment file contents are not logged.
-
-## Development
-
-Build and typecheck the plugin:
-
-```sh
-npm run typecheck
-npm run build
-```
-
-Run the real end-to-end workflow with a running Herdr server, OpenCode provider credentials, the configured plugin, and Herdr's OpenCode integration:
-
-```sh
-npm run test:e2e
-```
-
-The E2E workflow creates a disposable repository, worktree, pane, and Build agent and may incur model usage. Set `E2E_MODEL=provider/model-id` or `E2E_TIMEOUT_MS=<milliseconds>` when needed.
-
-Repository maintenance runs immediately and every minute. It skips a run when the repository lock is busy; a dispatch waits up to roughly 15 seconds for that lock before creating its worktree. PR sidebar metadata is reported with a two-hour TTL. Because continued pull requests use their actual head branch, the cleanup pass recognizes them after closure or merge. When a same-repository branch has at least one closed or merged pull request and no open pull request, cleanup force-removes its linked worktree even when the checkout is dirty, evacuated, broken, or prunable. Cleanup never removes the primary checkout or a worktree with an active or unknown-status agent. It retains the local branch and committed history, but intentionally discards uncommitted worktree changes for terminal pull requests.
+If a step fails, the toast includes any worktree and workspace already created. In particular, if the move succeeded but the new pane did not attach, resume the session manually from the reported worktree using `opencode <worktree> --session <session-id>`; do not blindly run `/feature` again.

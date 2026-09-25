@@ -4,7 +4,7 @@ Small, host-specific tools for Herdr-based coding workspaces.
 
 ## Components
 
-- `opencode/`: OpenCode workflow, batched Herdr dispatch, and pull-request worktree lifecycle maintenance.
+- `opencode/`: OpenCode v2 same-session Herdr worktree workflow.
 - `herdr/`: small Herdr adapter for an on-demand `ghpr` split pane.
 - `cli/ghpr/`: standalone GitHub pull request viewer built with Bun, React, and OpenTUI.
 
@@ -12,11 +12,8 @@ The tools are intentionally separate packages. They share one repository without
 
 ## Local Setup
 
-The OpenCode plugin owns the feature handoff and repository maintenance. The Herdr adapter has no timers.
+The OpenCode v2 CLI plugin moves the planning conversation into a Herdr worktree at `/feature`. The Herdr PR adapter has no timers.
 For SSH, install and register these components on the host owning the checkout.
-
-Original Git histories are retained in local `archive/dispatch/*` and
-`archive/ghpr/*` branches. Include those branches when publishing the repository.
 
 ### `ghpr`
 
@@ -33,7 +30,7 @@ Run it directly with an explicit pull request reference:
 bun run dev owner/repo#123
 ```
 
-### OpenCode dispatch
+### OpenCode feature worktrees
 
 ```sh
 cd opencode
@@ -42,7 +39,7 @@ npm run typecheck
 npm run build
 ```
 
-Register the resulting `dist/index.js` in `~/.config/opencode/opencode.json` using an absolute `file://` URL, then restart OpenCode.
+Register the `opencode/` plugin directory in `~/.config/opencode/cli.json` using an absolute `file://` URL, then restart OpenCode. See [`opencode/README.md`](opencode/README.md).
 
 ### Herdr PR plugin
 
