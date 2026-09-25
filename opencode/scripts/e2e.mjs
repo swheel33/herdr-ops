@@ -48,8 +48,8 @@ function record(check, actual) {
   assert.ok(actual, check)
 }
 
-async function scenario(spareTab) {
-  const name = spareTab ? "multiple-primary-tabs" : "last-primary-tab"
+async function scenario(spareTab, existingBranch = false) {
+  const name = existingBranch ? "existing-remote-branch" : spareTab ? "multiple-primary-tabs" : "last-primary-tab"
   const result = { name, resource: {}, observations: {}, status: "running" }
   receipt.scenarios.push(result)
   const resource = result.resource
@@ -60,6 +60,22 @@ async function scenario(spareTab) {
     await command("git", ["add", "opencode.json"], resource.repo)
     await command("git", ["-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "e2e base"], resource.repo)
     resource.base = await command("git", ["rev-parse", "HEAD"], resource.repo)
+    resource.branch = `feature/e2e-${name}-${process.pid}`
+    if (existingBranch) {
+      resource.remote = await realpath(await mkdtemp(path.join(tmpRoot, `herdr-feature-remote-${process.pid}-`)))
+      await command("git", ["init", "--bare", "-q", resource.remote], resource.repo)
+      await command("git", ["symbolic-ref", "HEAD", "refs/heads/main"], resource.remote)
+      await command("git", ["remote", "add", "origin", resource.remote], resource.repo)
+      await command("git", ["push", "-q", "origin", "main"], resource.repo)
+      await command("git", ["checkout", "-qb", resource.branch], resource.repo)
+      await writeFile(path.join(resource.repo, "BRANCH.txt"), "Existing branch content\n")
+      await command("git", ["add", "BRANCH.txt"], resource.repo)
+      await command("git", ["-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "existing branch"], resource.repo)
+      resource.base = await command("git", ["rev-parse", "HEAD"], resource.repo)
+      await command("git", ["push", "-q", "origin", resource.branch], resource.repo)
+      await command("git", ["checkout", "-q", "main"], resource.repo)
+      await command("git", ["branch", "-D", resource.branch], resource.repo)
+    }
 
     const primary = await json("herdr", ["workspace", "create", "--cwd", resource.repo, "--label", `e2e-${name}`, "--no-focus"])
     resource.primaryWorkspace = primary.workspace.workspace_id
@@ -95,9 +111,9 @@ async function scenario(spareTab) {
       return
     }
 
-    resource.branch = `feature/e2e-${spareTab ? "multi" : "single"}-${process.pid}`
+    if (!existingBranch) resource.branch = `feature/e2e-${spareTab ? "multi" : "single"}-${process.pid}`
     await api("session.prompt", resource.sessionID, {
-      text: `Implement a small feature: create FEATURE.txt containing the line "${name}". Before any changes, call herdr_start_feature with branch "${resource.branch}". Once in the new worktree, complete the implementation.`,
+      text: `Implement a small feature on ${existingBranch ? "the existing branch" : "branch"} ${resource.branch}: create FEATURE.txt containing the line "${name}". Before any changes, call herdr_start_feature with branch "${resource.branch}". Once in the new worktree, complete the implementation.`,
       resume: true,
     }, resource.repo)
 
@@ -111,6 +127,10 @@ async function scenario(spareTab) {
     result.observations.linkedWorkspace = linked.workspace
     record(`${name}: workspace belongs to original repository`, linked.workspace?.worktree?.repo_root === resource.repo && linked.workspace.worktree.is_linked_worktree === true)
     record(`${name}: worktree starts at the base commit`, await command("git", ["rev-parse", "HEAD"], resource.featurePath) === resource.base)
+    if (existingBranch) {
+      record(`${name}: existing branch content preserved`, (await readFile(path.join(resource.featurePath, "BRANCH.txt"), "utf8")).trim() === "Existing branch content")
+      record(`${name}: origin branch set as upstream`, await command("git", ["rev-parse", "--abbrev-ref", "@{upstream}"], resource.featurePath) === `origin/${resource.branch}`)
+    }
 
     const pane = await until(`${name}: same session attached in new pane`, async () => {
       const agents = await json("herdr", ["agent", "list"])
@@ -130,6 +150,10 @@ async function scenario(spareTab) {
     record(`${name}: primary checkout remains untouched`, !await readFile(path.join(resource.repo, "FEATURE.txt")).then(() => true, () => false))
     await command("git", ["add", "FEATURE.txt"], resource.featurePath)
     await command("git", ["-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "commit", "-qm", "e2e feature"], resource.featurePath)
+    if (existingBranch) {
+      await command("git", ["push", "-q"], resource.featurePath)
+      record(`${name}: push updates the existing branch`, await command("git", ["rev-parse", "HEAD"], resource.featurePath) === (await command("git", ["ls-remote", "origin", `refs/heads/${resource.branch}`], resource.featurePath)).split("\t")[0])
+    }
 
     const tabs = await until(`${name}: origin tab disposition`, async () => {
       const current = (await json("herdr", ["tab", "list", "--workspace", resource.primaryWorkspace])).tabs
@@ -202,6 +226,7 @@ async function scenario(spareTab) {
     if (resource.repo && !receipt.cleanup.some((entry) => entry.name === name && /Error/.test(JSON.stringify(entry)))) {
       // Only the directory created by mkdtemp above is removed.
       await rm(resource.repo, { recursive: true })
+      if (resource.remote) await rm(resource.remote, { recursive: true })
     }
   }
 }
@@ -222,6 +247,7 @@ try {
   originalWorkspace = workspaces.workspaces.find((workspace) => workspace.focused)?.workspace_id
   await scenario(false)
   await scenario(true)
+  await scenario(false, true)
   receipt.status = "passed"
 } catch (cause) {
   error = cause

@@ -13,7 +13,7 @@ export const Feature = Rpc.define({
       } as const,
       output: {
         type: "object",
-        properties: { branch: { type: "string" }, pending: { type: "boolean" } },
+        properties: { branch: { type: "string" }, pr: { type: "string" }, pending: { type: "boolean" } },
         required: ["pending"],
         additionalProperties: false,
       } as const,
