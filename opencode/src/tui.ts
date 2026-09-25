@@ -5,6 +5,7 @@ import { promisify } from "node:util"
 
 import { Plugin } from "@opencode/plugin/tui"
 import { Feature } from "./rpc.js"
+import { syncTabTitles } from "./tab-titles.js"
 
 const execFile = promisify(execFileCallback)
 
@@ -121,6 +122,25 @@ function message(error: unknown): string {
 export default Plugin.define({
   id: "herdr.feature.move",
   setup(ctx) {
+    const titles = process.env.HERDR_PANE_ID
+      ? syncTabTitles(process.env.HERDR_PANE_ID, (sessionID) => ctx.client.session.get({ sessionID }))
+      : undefined
+    const refreshTitle = () => {
+      const route = ctx.ui.router.current()
+      if (route.type === "session") void titles?.update(route.sessionID)
+      else void titles?.clear()
+    }
+    const stopTitles = ctx.data.on("session.renamed", (event) => {
+      const route = ctx.ui.router.current()
+      if (route.type === "session" && route.sessionID === event.data.sessionID) refreshTitle()
+    })
+    const stopCreated = ctx.data.on("session.created", (event) => {
+      const route = ctx.ui.router.current()
+      if (route.type === "session" && route.sessionID === event.data.sessionID) refreshTitle()
+    })
+    // Also handle existing conversations, route changes, and panes that report their session late.
+    if (titles) refreshTitle()
+    const titleTimer = titles ? setInterval(refreshTitle, 2_000) : undefined
     let moving = false
     let resumeAfterMove = false
     const feature = ctx.client.rpc(Feature)
@@ -256,6 +276,6 @@ export default Plugin.define({
       }))
       return null
     } })
-    return () => { stop(); slot() }
+    return () => { stop(); stopTitles(); stopCreated(); if (titleTimer) clearInterval(titleTimer); slot(); void titles?.dispose() }
   },
 })

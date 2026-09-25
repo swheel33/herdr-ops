@@ -4,6 +4,7 @@ import { promisify } from "node:util"
 
 import { Plugin } from "@opencode/plugin"
 import { Feature } from "./rpc.js"
+import { startPRMetadata } from "./pr-metadata.js"
 
 const execFile = promisify(callback)
 
@@ -36,6 +37,7 @@ export async function eligible(directory: string, sessionID: string): Promise<bo
 export default Plugin.define({
   id: "herdr.feature.agent",
   async setup(ctx) {
+    const stopMetadata = startPRMetadata(ctx.location.directory)
     await ctx.rpc.register(Feature, {
       take: async (input) => {
         const { sessionID } = input as { sessionID: string }
@@ -78,5 +80,6 @@ export default Plugin.define({
       if (session.parentID || !await eligible(session.location.directory, event.sessionID)) return
       event.system.push({ type: "text", text: "Herdr feature workflow: in this primary checkout, before implementing a feature or fix, call herdr_start_feature and end the turn without editing. After the session resumes in the new worktree, implement normally. Read-only investigation and answering questions do not require a worktree. Do not call this tool for explicitly requested in-place edits." })
     })
+    return stopMetadata
   },
 })
