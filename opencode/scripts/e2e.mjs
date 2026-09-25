@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile as callback } from "node:child_process"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -50,7 +50,7 @@ async function scenario(spareTab) {
   receipt.scenarios.push(result)
   const resource = result.resource
   try {
-    resource.repo = await mkdtemp(path.join(tmpRoot, `herdr-feature-${name}-`))
+    resource.repo = await realpath(await mkdtemp(path.join(tmpRoot, `herdr-feature-${name}-`)))
     await command("git", ["init", "-q", "-b", "main", resource.repo])
     await writeFile(path.join(resource.repo, "opencode.json"), `${JSON.stringify({ plugins: [`file://${pluginDirectory}`] })}\n`)
     await command("git", ["add", "opencode.json"], resource.repo)
