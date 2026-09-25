@@ -6,7 +6,8 @@
     "typecheck": "tsc --noEmit",
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc",
     "test:e2e": "npm run build && node scripts/e2e.mjs",
-    "test:metadata-e2e": "npm run build && node scripts/metadata-e2e.mjs"
+    "test:metadata-e2e": "npm run build && node scripts/metadata-e2e.mjs",
+    "test:pruning-e2e": "npm run build && node scripts/pruning-e2e.mjs"
   },
   "dependencies": {
     "@opencode/plugin": "2.0.16",

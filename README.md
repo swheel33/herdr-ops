@@ -12,7 +12,7 @@ The tools are intentionally separate packages. They share one repository without
 
 ## Local Setup
 
-The OpenCode v2 CLI plugin moves the planning conversation into a Herdr worktree at `/feature`. Its server half refreshes PR sidebar metadata every minute. The separate Herdr PR viewer adapter has no timers.
+The OpenCode v2 CLI plugin moves the planning conversation into a Herdr worktree at `/feature`. Its server half refreshes PR sidebar metadata and prunes clean, idle worktrees for merged or closed PRs every minute. The separate Herdr PR viewer adapter has no timers.
 For SSH, install and register these components on the host owning the checkout.
 
 ### `ghpr`

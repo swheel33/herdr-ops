@@ -51,6 +51,8 @@ The runner builds the plugin and exercises agent-requested handoffs in disposabl
 
 Run `npm run test:metadata-e2e` for a deterministic end-to-end check of the PR sidebar reporter and tab-title CLI commands against disposable fake Herdr, Git, and GitHub executables. It prints a repeatable JSON receipt under `/tmp/opencode/herdr-metadata-e2e/` with the reported tokens and tab renames. It does not change live workspaces.
 
+Run `npm run test:pruning-e2e` to exercise the cleanup loop against disposable fake Herdr, Git, and GitHub executables. Its JSON receipt under `/tmp/opencode/herdr-pruning-e2e/` records every command and removed workspace. It does not change live workspaces.
+
 To exercise a running named Herdr session instead of the current one, set `HERDR_E2E_SESSION=<name>`. The server-side plugin discovers the conversation across running local Herdr sessions; the TUI uses its pane's inherited socket. When testing a worktree checkout before installing its TUI plugin, set `HERDR_E2E_CLI_PLUGIN` to the installed copy's absolute path (the TUI code must be compatible). Set `HERDR_E2E_ELIGIBILITY_ONLY=1` to verify discovery against real Herdr agents without attempting the handoff; this is useful before the server and TUI plugins are installed from the same checkout. The JSON receipt records these selections.
 
 ## Use
@@ -61,6 +63,6 @@ Ask for a feature or fix in a Herdr-hosted root OpenCode v2 conversation in the 
 
 To resume an existing same-repository open pull request, use `/feature continue 123` or `/feature continue https://github.com/OWNER/REPO/pull/123`. A clean, closed worktree can be reopened; already-open or stale worktrees require manual inspection. Otherwise its branch is verified against the fetched PR head before a new worktree is created.
 
-The previous V1 plugin's background batch dispatch and automatic worktree cleanup are not part of this same-session CLI command. Manage completed worktrees explicitly with Herdr; this command never force-removes uncommitted changes. The server plugin refreshes the PR/branch sidebar badges for linked workspaces every minute (including named Herdr sessions), and the CLI plugin synchronizes OpenCode conversation titles to their Herdr tabs. Restart the OpenCode service and existing panes after rebuilding to enable both.
+The previous V1 plugin's background batch dispatch is not part of this same-session CLI command. The server plugin refreshes PR/branch sidebar badges and checks linked worktrees for merged or closed same-repository PRs every minute (including named Herdr sessions). It removes their open workspaces only when no agent is working and the checkout has no staged, tracked, or untracked changes; it never force-removes a checkout. Worktrees without a terminal PR are left alone. The CLI plugin synchronizes OpenCode conversation titles to their Herdr tabs. Restart the OpenCode service and existing panes after rebuilding to enable both.
 
 If a step fails, the toast includes any worktree and workspace already created. In particular, if the move succeeded but the new pane did not attach, resume the session manually from the reported worktree using `opencode <worktree> --session <session-id>`; do not blindly request another handoff.
