@@ -4,6 +4,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 
 import { Plugin } from "@opencode/plugin/tui"
+import { Feature } from "./rpc.js"
 
 const execFile = promisify(execFileCallback)
 
@@ -121,7 +122,22 @@ export default Plugin.define({
   id: "herdr.feature.move",
   setup(ctx) {
     let moving = false
-    return ctx.ui.slot({ append: "app", render: () => {
+    let resumeAfterMove = false
+    const feature = ctx.client.rpc(Feature)
+    const stop = ctx.data.on("session.execution.succeeded", (event) => {
+      const sessionID = event.data.sessionID
+      const route = ctx.ui.router.current()
+      if (moving || route.type !== "session" || route.sessionID !== sessionID) return
+      void (async () => {
+        const session = await ctx.client.session.get({ sessionID })
+        const request = await feature.take({ sessionID }, { location: session.location }) as { pending: boolean; branch?: string }
+        if (!request.pending) return
+        const branch = request.branch || `feature/${slug(session.title ?? "work")}-${Date.now().toString(36)}`
+        resumeAfterMove = true
+        ctx.keymap.dispatch("herdr.feature", branch)
+      })().catch((error) => ctx.ui.toast.show({ title: "Feature handoff failed", message: message(error), variant: "error" }))
+    })
+    const slot = ctx.ui.slot({ append: "app", render: () => {
       ctx.keymap.layer(() => ({
       mode: "global",
       commands: [{
@@ -139,7 +155,7 @@ export default Plugin.define({
           let sessionID: string | undefined
           try {
             const route = ctx.ui.router.current()
-            if (route.type !== "session") throw new Error("Open a planning conversation before /feature")
+            if (route.type !== "session") throw new Error("Open a root conversation before starting a feature")
             sessionID = route.sessionID
             const session = await ctx.client.session.get({ sessionID })
             if (session.parentID) throw new Error("/feature requires a root conversation")
@@ -212,8 +228,11 @@ export default Plugin.define({
             await herdr(root, "agent", "start", name, "--kind", "opencode", "--pane", pane, "--timeout", "60000", "--", "--session", sessionID)
             const agent = (await herdr(root, "agent", "get", name)).agent
             if (agent?.agent_session?.value !== sessionID) throw new Error("New pane has not reported the original session; old tab remains open")
-            await herdr(root, "workspace", "focus", workspace)
+            if (resumeAfterMove) {
+              await ctx.client.session.prompt({ sessionID, text: "The requested feature worktree is ready. Continue implementing the original user request in this worktree now.", resume: true })
+            }
             ctx.ui.router.navigate({ type: "home" })
+            await herdr(root, "workspace", "focus", workspace)
             // Herdr closing the last primary tab can close its linked workspaces.
             // Keep that tab on OpenCode's blank home screen instead.
             try {
@@ -230,11 +249,13 @@ export default Plugin.define({
             ctx.ui.toast.show({ title: "Feature move stopped", message: `${message(error)}${sessionID ? ` · Session: ${sessionID}` : ""}${tree ? ` · Worktree: ${tree}` : ""}${workspace ? ` · Workspace: ${workspace}` : ""}`, variant: "error", duration: 12000 })
           } finally {
             moving = false
+            resumeAfterMove = false
           }
         },
       }],
       }))
       return null
     } })
+    return () => { stop(); slot() }
   },
 })
