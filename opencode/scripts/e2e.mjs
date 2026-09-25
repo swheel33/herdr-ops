@@ -5,15 +5,19 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
+import { eligible } from "../dist/index.js"
 
 const execFile = promisify(callback)
 const pluginDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
+const herdrSession = process.env.HERDR_E2E_SESSION
+const eligibilityOnly = process.env.HERDR_E2E_ELIGIBILITY_ONLY === "1"
 const tmpRoot = "/tmp/opencode"
 const receiptDirectory = path.join(tmpRoot, "herdr-feature-e2e", `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`)
-const receipt = { startedAt: new Date().toISOString(), pluginDirectory, scenarios: [], checks: [], cleanup: [], status: "running" }
+const receipt = { startedAt: new Date().toISOString(), pluginDirectory, herdrSession: herdrSession ?? "inherited", eligibilityOnly, scenarios: [], checks: [], cleanup: [], status: "running" }
 
 async function command(executable, args, cwd = pluginDirectory) {
-  const { stdout } = await execFile(executable, args, { cwd, timeout: 90_000, maxBuffer: 4 * 1024 * 1024 })
+  const selected = executable === "herdr" && herdrSession && args[0] !== "--version" ? ["--session", herdrSession, ...args] : args
+  const { stdout } = await execFile(executable, selected, { cwd, timeout: 90_000, maxBuffer: 4 * 1024 * 1024 })
   return stdout.trim()
 }
 
@@ -80,6 +84,16 @@ async function scenario(spareTab) {
 
     const started = await json("herdr", ["agent", "start", `e2e-${spareTab ? "multi" : "single"}-${process.pid}`.slice(0, 32), "--kind", "opencode", "--pane", resource.originPane, "--timeout", "60000", "--", "--session", resource.sessionID], resource.repo)
     record(`${name}: primary pane has the session`, started.agent?.agent_session?.value === resource.sessionID)
+    const runningSessions = JSON.parse(await command("herdr", ["session", "list", "--json"]))
+    result.observations.runningSessions = runningSessions.sessions.map(({ name, running }) => ({ name, running }))
+    const agents = await json("herdr", ["agent", "list"])
+    record(`${name}: selected Herdr session reports the agent`, agents.agents.some((agent) => agent.agent_session?.value === resource.sessionID))
+    if (eligibilityOnly) {
+      record(`${name}: server eligibility finds the agent across named sessions`, await eligible(resource.repo, resource.sessionID))
+      record(`${name}: unrelated session is not eligible`, !await eligible(resource.repo, "ses_nonexistent"))
+      result.status = "passed"
+      return
+    }
 
     resource.branch = `feature/e2e-${spareTab ? "multi" : "single"}-${process.pid}`
     await api("session.prompt", resource.sessionID, {
@@ -199,7 +213,9 @@ try {
   assert.equal(process.env.HERDR_ENV, "1", "Run the E2E suite from a Herdr-managed pane")
   const configPath = path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "opencode", "cli.json")
   const config = JSON.parse(await readFile(configPath, "utf8"))
-  assert.ok(config.plugins?.some((entry) => typeof entry === "string" && entry.replace(/^file:\/\//, "") === pluginDirectory), `Configure ${pluginDirectory} as a CLI plugin in ${configPath}`)
+  const cliPlugin = process.env.HERDR_E2E_CLI_PLUGIN ?? pluginDirectory
+  assert.ok(config.plugins?.some((entry) => typeof entry === "string" && entry.replace(/^file:\/\//, "") === cliPlugin), `Configure ${cliPlugin} as a CLI plugin in ${configPath}`)
+  receipt.cliPlugin = cliPlugin
   receipt.opencode = await command("opencode", ["--version"])
   receipt.herdr = await command("herdr", ["--version"])
   const workspaces = await json("herdr", ["workspace", "list"])

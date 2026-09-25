@@ -7,16 +7,27 @@ import { Feature } from "./rpc.js"
 
 const execFile = promisify(callback)
 
-async function eligible(directory: string, sessionID: string): Promise<boolean> {
+export async function eligible(directory: string, sessionID: string): Promise<boolean> {
   try {
     const { stdout: root } = await execFile("git", ["rev-parse", "--show-toplevel"], { cwd: directory })
     const cwd = root.trim()
     const { stdout: common } = await execFile("git", ["rev-parse", "--git-common-dir"], { cwd })
     const { stdout: local } = await execFile("git", ["rev-parse", "--git-dir"], { cwd })
     if (path.resolve(cwd, common.trim()) !== path.resolve(cwd, local.trim())) return false
-    const { stdout: response } = await execFile("herdr", ["agent", "list"], { cwd })
-    const agents = JSON.parse(response).result?.agents as Array<{ agent_session?: { value?: string } }> | undefined
-    return agents?.some((agent) => agent.agent_session?.value === sessionID) ?? false
+    // The OpenCode service is shared between panes and does not inherit their
+    // HERDR_SOCKET_PATH. Its default Herdr session may not own this conversation.
+    const { stdout: response } = await execFile("herdr", ["session", "list", "--json"], { cwd, timeout: 10_000 })
+    const sessions = JSON.parse(response).sessions as Array<{ name: string; running: boolean }> | undefined
+    for (const session of sessions?.filter((item) => item.running) ?? []) {
+      try {
+        const { stdout } = await execFile("herdr", ["--session", session.name, "agent", "list"], { cwd, timeout: 10_000 })
+        const agents = JSON.parse(stdout).result?.agents as Array<{ agent_session?: { value?: string } }> | undefined
+        if (agents?.some((agent) => agent.agent_session?.value === sessionID)) return true
+      } catch {
+        // A named session may stop between discovery and inspection.
+      }
+    }
+    return false
   } catch {
     return false
   }
