@@ -60,29 +60,3 @@ export async function refreshPRMetadata(root: string): Promise<void> {
     }
   }
 }
-
-export function startPRMetadata(directory: string): () => void {
-  let stopped = false
-  let active = false
-  const refresh = async () => {
-    if (stopped || active) return
-    active = true
-    try {
-      const root = await run("git", ["rev-parse", "--show-toplevel"], directory)
-      const [common, local] = await Promise.all([
-        run("git", ["rev-parse", "--git-common-dir"], root),
-        run("git", ["rev-parse", "--git-dir"], root),
-      ])
-      if (path.resolve(root, common) !== path.resolve(root, local)) return
-      await refreshPRMetadata(root)
-    } catch (error) {
-      if (!stopped) console.error("Herdr PR metadata refresh failed:", error)
-    } finally {
-      active = false
-    }
-  }
-  void refresh()
-  const timer = setInterval(() => void refresh(), 60_000)
-  timer.unref()
-  return () => { stopped = true; clearInterval(timer) }
-}
