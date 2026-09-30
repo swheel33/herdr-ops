@@ -1,6 +1,8 @@
-# Same-session Herdr feature worktrees (OpenCode v2)
+# Herdr feature worktrees (OpenCode v2)
 
 This OpenCode v2 plugin lets an agent request a Herdr feature worktree before implementation. It moves the **existing** root session into that checkout and resumes its ID in a new Herdr workspace. It focuses the new workspace only if you are still viewing the original conversation in the focused Herdr pane when setup finishes; switching to another workspace, tab, pane, or conversation preserves your focus. No plan mode, copied plan, or second implementor session is needed. The old Herdr tab is closed only when it still shows that conversation alone **and** the primary workspace has another tab. Otherwise it stays open on OpenCode's blank home view (or the different conversation you selected), so the primary workspace and its linked worktrees remain available.
+
+For multiple independent features, it **forks the full conversation history once per feature and moves each fork into its own worktree**, keeping the original conversation in the primary checkout. Each fork receives its specific assignment and runs independently with the inherited context.
 
 ## Install
 
@@ -53,6 +55,10 @@ Run `npm run test:metadata-e2e` for a deterministic end-to-end check of the PR s
 
 Run `npm run test:focus-e2e` for a deterministic workflow check using real disposable Git worktrees, a fake Herdr executable, and a CLI-context harness. It verifies following the original pane, preserving focus after switching Herdr panes during setup, and leaving another OpenCode conversation and its tab untouched. It does not change live workspaces and prints a JSON receipt with commands and navigation under `/tmp/opencode/herdr-focus-e2e/`.
 
+Run `npm run test:batch-e2e` for a deterministic workflow check spanning the server tool, RPC handoff, CLI plugin, and real disposable Git worktrees. Herdr and the OpenCode session host are fixtures. It verifies three independent branches with full-history session forks, moves of the forks rather than the original, exact task delivery, an untouched primary checkout, validation, duplicate-event handling, and continued startup after one feature fails. Its repeatable JSON receipt under `/tmp/opencode/herdr-batch-e2e/` records sessions, prompts, results, and CLI commands.
+
+Run `npm run test:fork-e2e` against a running OpenCode v2 service to verify the actual session API. It records planning context, forks the full history three times, moves each fork into a real disposable Git worktree, and verifies the inherited history and original session location. It does not invoke a model. The repeatable receipt under `/tmp/opencode/herdr-fork-e2e/` includes session IDs and inherited history.
+
 Run `npm run test:pruning-e2e` to exercise the cleanup loop against disposable fake Herdr, Git, and GitHub executables. Its JSON receipt under `/tmp/opencode/herdr-pruning-e2e/` records every command and removed workspace. It does not change live workspaces.
 
 To exercise a running named Herdr session instead of the current one, set `HERDR_E2E_SESSION=<name>`. The server-side plugin discovers the conversation across running local Herdr sessions; the TUI uses its pane's inherited socket. When testing a worktree checkout before installing its TUI plugin, set `HERDR_E2E_CLI_PLUGIN` to the installed copy's absolute path (the TUI code must be compatible). Set `HERDR_E2E_ELIGIBILITY_ONLY=1` to verify discovery against real Herdr agents without attempting the handoff; this is useful before the server and TUI plugins are installed from the same checkout. The JSON receipt records these selections.
@@ -63,9 +69,27 @@ Ask for a feature or fix in a Herdr-hosted root OpenCode v2 conversation in the 
 
 `/feature` remains available as a manual fallback, with an optional existing or new branch argument, while the automatic handoff is being adopted. It is not required for ordinary feature work.
 
+### Multiple features from one request
+
+Ask, for example: “Fix the asset caching, ChangeText, and SDK diagnostics issues in three separate branches. Reproduce each locally and open one PR per fix.” The agent queues a single batch:
+
+```json
+{
+  "features": [
+    { "branch": "fix/asset-caching", "task": "Fix missing-asset routing and caching. Reproduce and verify locally, then commit, push, and open a PR." },
+    { "branch": "fix/change-text", "task": "Reproduce and harden ChangeText and transaction-panel text. Verify locally, then commit, push, and open a PR." },
+    { "branch": "fix/sdk-diagnostics", "task": "Improve SDK transport diagnostics and finish severity cleanup. Verify locally, then commit, push, and open a PR." }
+  ]
+}
+```
+
+Each fork inherits the original conversation's full projected history through OpenCode's native fork API, then uses the same session-move mechanism as a single feature to relocate into its worktree. The task identifies which part of the original request that fork should implement; it does not replace or summarize the inherited history. Each fork gets a distinct session ID, and subsequent messages stay in their respective sessions. Branch names are optional; omitted names are generated from the task. Each entry can specify an existing `pr` instead of `branch`. Do not combine `features` with top-level `branch` or `pr`, or queue repeated calls in the same turn.
+
+After the requesting turn finishes, workspaces are prepared sequentially and each session starts immediately, allowing implementation to overlap. The original conversation and tab stay open, focus stays where you left it, and a synthetic message records each started session/worktree or failure. A failed entry does not prevent the remaining entries from starting. Inspect any reported resources before retrying failed entries. The handoff itself does not commit, push, or create PRs; those instructions are carried in each task for its implementor.
+
 To resume an existing same-repository open pull request, use `/feature continue 123` or `/feature continue https://github.com/OWNER/REPO/pull/123`. A clean, closed worktree can be reopened; already-open or stale worktrees require manual inspection. Otherwise its branch is verified against the fetched PR head before a new worktree is created.
 
-The previous V1 plugin's background batch dispatch is not part of this same-session CLI command. The server plugin runs one serialized maintenance cycle at startup and every minute: refresh `develop`, refresh PR/branch sidebar badges, then check linked worktrees for merged or closed same-repository PRs (including named Herdr sessions). Overlapping cycles for the same primary repository in the server are skipped, and a failed step does not prevent the remaining steps.
+The `/feature` CLI command remains a single-session move; batch starts use the tool's `features` array. The server plugin runs one serialized maintenance cycle at startup and every minute: refresh `develop`, refresh PR/branch sidebar badges, then check linked worktrees for merged or closed same-repository PRs (including named Herdr sessions). Overlapping cycles for the same primary repository in the server are skipped, and a failed step does not prevent the remaining steps.
 
 The `develop` refresh fetches `origin/develop` and fast-forwards the primary checkout only when it is already on `develop`, has no staged, tracked, or untracked changes or in-progress Git operation, and no active agent is working there. If agent discovery fails, it leaves the checkout untouched. Repositories without `origin` or remote `develop` are skipped. Local commits ahead of or diverged from the remote are preserved; the plugin never switches branches, stashes, rebases, resets, or pushes. It does not update `develop` while another branch is checked out in the primary checkout.
 

@@ -4,7 +4,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 
 import { Plugin } from "@opencode/plugin/tui"
-import { Feature } from "./rpc.js"
+import { Feature, type FeatureTask } from "./rpc.js"
 import { syncTabTitles } from "./tab-titles.js"
 
 const execFile = promisify(execFileCallback)
@@ -166,19 +166,27 @@ export default Plugin.define({
     const titleTimer = titles ? setInterval(refreshTitle, 2_000) : undefined
     let moving = false
     let resumeAfterMove = false
+    let queuedBatch: { sessionID: string; features: FeatureTask[] } | undefined
+    let taking = false
     const feature = ctx.client.rpc(Feature)
     const stop = ctx.data.on("session.execution.succeeded", (event) => {
       const sessionID = event.data.sessionID
       const route = ctx.ui.router.current()
-      if (moving || route.type !== "session" || route.sessionID !== sessionID) return
+      if (moving || taking || route.type !== "session" || route.sessionID !== sessionID) return
+      taking = true
       void (async () => {
         const session = await ctx.client.session.get({ sessionID })
-        const request = await feature.take({ sessionID }, { location: session.location }) as { pending: boolean; branch?: string; pr?: string }
+        const request = await feature.take({ sessionID }, { location: session.location }) as { pending: boolean; branch?: string; pr?: string; features?: FeatureTask[] }
         if (!request.pending) return
+        if (request.features) {
+          queuedBatch = { sessionID, features: request.features }
+          ctx.keymap.dispatch("herdr.feature")
+          return
+        }
         const branch = request.branch || `feature/${slug(session.title ?? "work")}-${Date.now().toString(36)}`
         resumeAfterMove = true
         ctx.keymap.dispatch("herdr.feature", request.pr ? `continue ${request.pr}` : branch)
-      })().catch((error) => ctx.ui.toast.show({ title: "Feature handoff failed", message: message(error), variant: "error" }))
+      })().catch((error) => ctx.ui.toast.show({ title: "Feature handoff failed", message: message(error), variant: "error" })).finally(() => { taking = false })
     })
     const slot = ctx.ui.slot({ append: "app", render: () => {
       ctx.keymap.layer(() => ({
@@ -193,112 +201,135 @@ export default Plugin.define({
         run: async (input) => {
           if (moving) return
           moving = true
-          let workspace: string | undefined
-          let tree: string | undefined
-          let sessionID: string | undefined
+          const batch = queuedBatch
+          queuedBatch = undefined
+          const results: string[] = []
+          let verifiedOrigin = false
           try {
-            const route = ctx.ui.router.current()
-            if (route.type !== "session") throw new Error("Open a root conversation before starting a feature")
-            sessionID = route.sessionID
-            const session = await ctx.client.session.get({ sessionID })
-            if (session.parentID) throw new Error("/feature requires a root conversation")
-            const root = await realpath(await git(session.location.directory, "rev-parse", "--show-toplevel"))
-            const common = await realpath(path.resolve(root, await git(root, "rev-parse", "--git-common-dir")))
-            const localGit = await realpath(path.resolve(root, await git(root, "rev-parse", "--git-dir")))
-            if (common !== localGit) throw new Error("This conversation is already in a linked worktree")
-            const initialTab = process.env.HERDR_TAB_ID
-            const initialPane = process.env.HERDR_PANE_ID
-            if (!initialTab || !initialPane) throw new Error("Start OpenCode inside a Herdr pane")
-            const currentPane = (await herdr(root, "pane", "get", initialPane)).pane
-            if (currentPane?.agent_session?.value !== sessionID || await realpath(await git(currentPane.cwd, "rev-parse", "--show-toplevel")) !== root) {
-              throw new Error("The selected conversation must belong to this Herdr pane and checkout")
-            }
-            if (await git(root, "status", "--porcelain", "--untracked-files=all")) {
-              throw new Error("The primary checkout is dirty; commit or move its changes before creating a feature")
-            }
-            const requested = input?.trim() ?? ""
-            const continuing = requested.startsWith("continue ")
-            const pr = continuing ? await pullRequest(root, requested.slice("continue ".length).trim()) : undefined
-            const suggested = `feature/${slug(session.title ?? "work")}-${Date.now().toString(36)}`
-            const branch = pr?.branch ?? (requested || await ctx.ui.dialog.prompt({ title: "New feature branch", placeholder: suggested }))
-            if (branch === undefined) return
-            const selected = branch.trim() || suggested
-            await git(root, "check-ref-format", "--branch", selected)
-            if (await git(root, "branch", "--show-current") === selected) throw new Error(`Branch ${selected} is checked out in the primary checkout; cannot open it in another worktree`)
-            const title = session.title || selected
-            const target = pr ? { base: pr.commit, upstream: `origin/${selected}`, existing: true } : await branchCommit(root, selected)
-            const base = target.base
-            let existing: { path: string; open_workspace_id?: string; is_prunable?: boolean } | undefined
-            if (target.existing) {
-              const worktrees = (await herdr(root, "worktree", "list", "--cwd", root)).worktrees as Array<{ branch: string; path: string; open_workspace_id?: string; is_prunable?: boolean }>
-              existing = worktrees.find((tree) => tree.branch === selected)
-              if (existing?.is_prunable || existing?.open_workspace_id) throw new Error("The branch worktree is already open or stale; inspect it before continuing")
-              if (existing && await git(existing.path, "status", "--porcelain", "--untracked-files=all")) {
-                throw new Error("The branch worktree has uncommitted changes")
-              }
-              if (existing) {
-                const local = await git(existing.path, "rev-parse", "HEAD")
-                if (local !== base && await isAncestor(existing.path, local, base)) {
-                  await git(existing.path, "merge", "--ff-only", base)
-                } else if (local !== base && !await isAncestor(existing.path, base, local)) {
-                  throw new Error("The branch worktree has diverged from its remote head")
-                }
-              } else if (target.upstream) {
-                await existingBranch(root, selected, base)
-              }
-            }
-            const created = existing
-              ? await herdr(root, "worktree", "open", "--cwd", root, "--path", existing.path, "--label", title, "--no-focus")
-              : await herdr(root, "worktree", "create", "--cwd", root, "--branch", selected, "--base", base, "--label", title, "--no-focus")
-            workspace = created.workspace?.workspace_id
-            tree = created.worktree?.path ?? created.workspace?.worktree_path
-            const pane = created.root_pane?.pane_id
-            if (!workspace || !tree || !pane) throw new Error("Herdr created a worktree but did not return its workspace, path, and pane IDs")
-            tree = await realpath(tree)
-            if (await git(tree, "rev-parse", "--abbrev-ref", "HEAD") !== selected || (!pr && await git(tree, "rev-parse", "HEAD") !== base)) {
-              throw new Error("Herdr worktree does not match the selected branch and base")
-            }
-            if (target.upstream) await git(tree, "branch", "--set-upstream-to", target.upstream, selected)
-            await linkEnvironment(root, tree)
-            if (!existing) await installDependencies(tree)
-            await ctx.client.session.move({ sessionID, directory: tree })
-            let arrived = false
-            for (let i = 0; i < 60; i++) {
-              const current = await ctx.client.session.get({ sessionID })
-              if (current.location.directory === tree) { arrived = true; break }
-              await new Promise((resolve) => setTimeout(resolve, 200))
-            }
-            if (!arrived) throw new Error("The session move has not completed; inspect the session before retrying")
-            const name = `f-${slug(selected).slice(0, 15)}-${Date.now().toString(36)}`.slice(0, 32)
-            await herdr(root, "agent", "start", name, "--kind", "opencode", "--pane", pane, "--timeout", "60000", "--", "--session", sessionID)
-            const agent = (await herdr(root, "agent", "get", name)).agent
-            if (agent?.agent_session?.value !== sessionID) throw new Error("New pane has not reported the original session; old tab remains open")
-            if (resumeAfterMove) {
-              await ctx.client.session.prompt({ sessionID, text: "The requested feature worktree is ready. Continue implementing the original user request in this worktree now.", resume: true })
-            }
-            // Setup can take long enough for the user to switch conversations or
-            // Herdr panes. Follow the move only while they still view its origin.
-            const originPane = (await herdr(root, "pane", "get", initialPane)).pane
-            const finalRoute = ctx.ui.router.current()
-            if (finalRoute.type === "session" && finalRoute.sessionID === sessionID) {
-              ctx.ui.router.navigate({ type: "home" })
-              if (originPane?.focused === true) await herdr(root, "workspace", "focus", workspace)
-              // Herdr closing the last primary tab can close its linked workspaces.
-              // Keep that tab on OpenCode's blank home screen instead. Never close
-              // the tab if the user has opened a different conversation in it.
+            for (const [index, task] of (batch?.features ?? [undefined]).entries()) {
+              let workspace: string | undefined
+              let tree: string | undefined
+              let sessionID: string | undefined
               try {
-                const oldTab = (await herdr(root, "tab", "get", initialTab)).tab
-                const tabs = (await herdr(root, "tab", "list", "--workspace", currentPane.workspace_id)).tabs as Array<{ tab_id: string }>
-                if (oldTab?.pane_count === 1 && tabs.some((tab) => tab.tab_id !== initialTab)) {
-                  await herdr(root, "tab", "close", initialTab)
+                const route = ctx.ui.router.current()
+                if (!batch && route.type !== "session") throw new Error("Open a root conversation before starting a feature")
+                sessionID = batch?.sessionID ?? (route.type === "session" ? route.sessionID : undefined)
+                if (!sessionID) throw new Error("No feature source conversation")
+                const session = await ctx.client.session.get({ sessionID })
+                if (session.parentID) throw new Error("/feature requires a root conversation")
+                const root = await realpath(await git(session.location.directory, "rev-parse", "--show-toplevel"))
+                const common = await realpath(path.resolve(root, await git(root, "rev-parse", "--git-common-dir")))
+                const localGit = await realpath(path.resolve(root, await git(root, "rev-parse", "--git-dir")))
+                if (common !== localGit) throw new Error("This conversation is already in a linked worktree")
+                const initialTab = process.env.HERDR_TAB_ID
+                const initialPane = process.env.HERDR_PANE_ID
+                if (!initialTab || !initialPane) throw new Error("Start OpenCode inside a Herdr pane")
+                const currentPane = (await herdr(root, "pane", "get", initialPane)).pane
+                if ((!batch || !verifiedOrigin) && (currentPane?.agent_session?.value !== sessionID || await realpath(await git(currentPane.cwd, "rev-parse", "--show-toplevel")) !== root)) {
+                  throw new Error("The selected conversation must belong to this Herdr pane and checkout")
                 }
-              } catch {
-                // The original tab stays on OpenCode home when closing is unavailable.
+                verifiedOrigin = true
+                if (await git(root, "status", "--porcelain", "--untracked-files=all")) {
+                  throw new Error("The primary checkout is dirty; commit or move its changes before creating a feature")
+                }
+                const requested = task ? (task.pr ? `continue ${task.pr}` : task.branch ?? `feature/${slug(task.task)}-${Date.now().toString(36)}-${index + 1}`) : input?.trim() ?? ""
+                const continuing = requested.startsWith("continue ")
+                const pr = continuing ? await pullRequest(root, requested.slice("continue ".length).trim()) : undefined
+                const suggested = `feature/${slug(session.title ?? "work")}-${Date.now().toString(36)}`
+                const branch = pr?.branch ?? (requested || await ctx.ui.dialog.prompt({ title: "New feature branch", placeholder: suggested }))
+                if (branch === undefined) return
+                const selected = branch.trim() || suggested
+                await git(root, "check-ref-format", "--branch", selected)
+                if (await git(root, "branch", "--show-current") === selected) throw new Error(`Branch ${selected} is checked out in the primary checkout; cannot open it in another worktree`)
+                const title = task ? task.task.split("\n")[0].slice(0, 100) : session.title || selected
+                const target = pr ? { base: pr.commit, upstream: `origin/${selected}`, existing: true } : await branchCommit(root, selected)
+                const base = target.base
+                let existing: { path: string; open_workspace_id?: string; is_prunable?: boolean } | undefined
+                if (target.existing) {
+                  const worktrees = (await herdr(root, "worktree", "list", "--cwd", root)).worktrees as Array<{ branch: string; path: string; open_workspace_id?: string; is_prunable?: boolean }>
+                  existing = worktrees.find((tree) => tree.branch === selected)
+                  if (existing?.is_prunable || existing?.open_workspace_id) throw new Error("The branch worktree is already open or stale; inspect it before continuing")
+                  if (existing && await git(existing.path, "status", "--porcelain", "--untracked-files=all")) {
+                    throw new Error("The branch worktree has uncommitted changes")
+                  }
+                  if (existing) {
+                    const local = await git(existing.path, "rev-parse", "HEAD")
+                    if (local !== base && await isAncestor(existing.path, local, base)) {
+                      await git(existing.path, "merge", "--ff-only", base)
+                    } else if (local !== base && !await isAncestor(existing.path, base, local)) {
+                      throw new Error("The branch worktree has diverged from its remote head")
+                    }
+                  } else if (target.upstream) {
+                    await existingBranch(root, selected, base)
+                  }
+                }
+                const created = existing
+                  ? await herdr(root, "worktree", "open", "--cwd", root, "--path", existing.path, "--label", title, "--no-focus")
+                  : await herdr(root, "worktree", "create", "--cwd", root, "--branch", selected, "--base", base, "--label", title, "--no-focus")
+                workspace = created.workspace?.workspace_id
+                tree = created.worktree?.path ?? created.workspace?.worktree_path
+                const pane = created.root_pane?.pane_id
+                if (!workspace || !tree || !pane) throw new Error("Herdr created a worktree but did not return its workspace, path, and pane IDs")
+                tree = await realpath(tree)
+                if (await git(tree, "rev-parse", "--abbrev-ref", "HEAD") !== selected || (!pr && await git(tree, "rev-parse", "HEAD") !== base)) {
+                  throw new Error("Herdr worktree does not match the selected branch and base")
+                }
+                if (target.upstream) await git(tree, "branch", "--set-upstream-to", target.upstream, selected)
+                await linkEnvironment(root, tree)
+                if (!existing) await installDependencies(tree)
+                if (task) {
+                  const fork = await ctx.client.session.fork({ sessionID })
+                  sessionID = fork.id
+                  await ctx.client.session.update({ sessionID, title })
+                }
+                await ctx.client.session.move({ sessionID, directory: tree })
+                let arrived = false
+                for (let i = 0; i < 60; i++) {
+                  const current = await ctx.client.session.get({ sessionID })
+                  if (current.location.directory === tree) { arrived = true; break }
+                  await new Promise((resolve) => setTimeout(resolve, 200))
+                }
+                if (!arrived) throw new Error("The session move has not completed; inspect the session before retrying")
+                const name = `f-${slug(selected).slice(0, 15)}-${Date.now().toString(36)}`.slice(0, 32)
+                await herdr(root, "agent", "start", name, "--kind", "opencode", "--pane", pane, "--timeout", "60000", "--", "--session", sessionID)
+                const agent = (await herdr(root, "agent", "get", name)).agent
+                if (agent?.agent_session?.value !== sessionID) throw new Error("New pane has not reported the feature session; inspect it before retrying")
+                if (task) {
+                  await ctx.client.session.prompt({ sessionID, text: `This session is a full-history fork of the original planning conversation, now moved into its own Herdr worktree on branch ${selected}. Use the inherited context and implement only the assigned feature below. Other features from the original request are handled in separate sessions.\n\n${task.task}`, resume: true })
+                  results.push(`Started ${selected} · Session: ${sessionID} · Worktree: ${tree} · Workspace: ${workspace}`)
+                } else if (resumeAfterMove) {
+                  await ctx.client.session.prompt({ sessionID, text: "The requested feature worktree is ready. Continue implementing the original user request in this worktree now.", resume: true })
+                }
+                // Setup can take long enough for the user to switch conversations or
+                // Herdr panes. Follow the move only while they still view its origin.
+                const originPane = batch ? undefined : (await herdr(root, "pane", "get", initialPane)).pane
+                const finalRoute = ctx.ui.router.current()
+                if (!batch && finalRoute.type === "session" && finalRoute.sessionID === sessionID) {
+                  ctx.ui.router.navigate({ type: "home" })
+                  if (originPane?.focused === true) await herdr(root, "workspace", "focus", workspace)
+                  // Herdr closing the last primary tab can close its linked workspaces.
+                  // Keep that tab on OpenCode's blank home screen instead. Never close
+                  // the tab if the user has opened a different conversation in it.
+                  try {
+                    const oldTab = (await herdr(root, "tab", "get", initialTab)).tab
+                    const tabs = (await herdr(root, "tab", "list", "--workspace", currentPane.workspace_id)).tabs as Array<{ tab_id: string }>
+                    if (oldTab?.pane_count === 1 && tabs.some((tab) => tab.tab_id !== initialTab)) {
+                      await herdr(root, "tab", "close", initialTab)
+                    }
+                  } catch {
+                    // The original tab stays on OpenCode home when closing is unavailable.
+                  }
+                }
+                ctx.ui.toast.show({ title: "Feature ready", message: `${selected} · ${tree}`, variant: "success" })
+              } catch (error) {
+                const detail = `${message(error)}${sessionID ? ` · Session: ${sessionID}` : ""}${tree ? ` · Worktree: ${tree}` : ""}${workspace ? ` · Workspace: ${workspace}` : ""}`
+                results.push(`Failed ${task?.branch ?? task?.pr ?? task?.task ?? input}: ${detail}`)
+                ctx.ui.toast.show({ title: "Feature move stopped", message: detail, variant: "error", duration: 12000 })
               }
             }
-            ctx.ui.toast.show({ title: "Feature ready", message: `${selected} · ${tree}`, variant: "success" })
-          } catch (error) {
-            ctx.ui.toast.show({ title: "Feature move stopped", message: `${message(error)}${sessionID ? ` · Session: ${sessionID}` : ""}${tree ? ` · Worktree: ${tree}` : ""}${workspace ? ` · Workspace: ${workspace}` : ""}`, variant: "error", duration: 12000 })
+            if (batch) {
+              await ctx.client.session.synthetic({ sessionID: batch.sessionID, text: `Herdr feature batch results:\n${results.join("\n")}\nStarted sessions are working independently. Inspect failed resources before retrying those tasks.` })
+            }
           } finally {
             moving = false
             resumeAfterMove = false
