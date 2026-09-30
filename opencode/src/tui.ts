@@ -276,18 +276,25 @@ export default Plugin.define({
             if (resumeAfterMove) {
               await ctx.client.session.prompt({ sessionID, text: "The requested feature worktree is ready. Continue implementing the original user request in this worktree now.", resume: true })
             }
-            ctx.ui.router.navigate({ type: "home" })
-            await herdr(root, "workspace", "focus", workspace)
-            // Herdr closing the last primary tab can close its linked workspaces.
-            // Keep that tab on OpenCode's blank home screen instead.
-            try {
-              const oldTab = (await herdr(root, "tab", "get", initialTab)).tab
-              const tabs = (await herdr(root, "tab", "list", "--workspace", currentPane.workspace_id)).tabs as Array<{ tab_id: string }>
-              if (oldTab?.pane_count === 1 && tabs.some((tab) => tab.tab_id !== initialTab)) {
-                await herdr(root, "tab", "close", initialTab)
+            // Setup can take long enough for the user to switch conversations or
+            // Herdr panes. Follow the move only while they still view its origin.
+            const originPane = (await herdr(root, "pane", "get", initialPane)).pane
+            const finalRoute = ctx.ui.router.current()
+            if (finalRoute.type === "session" && finalRoute.sessionID === sessionID) {
+              ctx.ui.router.navigate({ type: "home" })
+              if (originPane?.focused === true) await herdr(root, "workspace", "focus", workspace)
+              // Herdr closing the last primary tab can close its linked workspaces.
+              // Keep that tab on OpenCode's blank home screen instead. Never close
+              // the tab if the user has opened a different conversation in it.
+              try {
+                const oldTab = (await herdr(root, "tab", "get", initialTab)).tab
+                const tabs = (await herdr(root, "tab", "list", "--workspace", currentPane.workspace_id)).tabs as Array<{ tab_id: string }>
+                if (oldTab?.pane_count === 1 && tabs.some((tab) => tab.tab_id !== initialTab)) {
+                  await herdr(root, "tab", "close", initialTab)
+                }
+              } catch {
+                // The original tab stays on OpenCode home when closing is unavailable.
               }
-            } catch {
-              // The original tab stays on OpenCode home when closing is unavailable.
             }
             ctx.ui.toast.show({ title: "Feature ready", message: `${selected} · ${tree}`, variant: "success" })
           } catch (error) {
