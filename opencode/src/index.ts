@@ -5,6 +5,7 @@ import { promisify } from "node:util"
 import { Plugin } from "@opencode/plugin"
 import { Feature, featuresSchema, type FeatureTask } from "./rpc.js"
 import { startMaintenance } from "./maintenance.js"
+import { diagnostic } from "./diagnostics.js"
 
 const execFile = promisify(callback)
 
@@ -38,6 +39,7 @@ export default Plugin.define({
   id: "herdr.feature.agent",
   async setup(ctx) {
     const stopMaintenance = startMaintenance(ctx.location.directory)
+    diagnostic("server.loaded", { directory: ctx.location.directory })
     const queuing = new Set<string>()
     const queue = async (sessionID: string, request: { features: FeatureTask[] } | { branch: string; pr: string }) => {
       if (queuing.has(sessionID)) return false
@@ -46,6 +48,7 @@ export default Plugin.define({
         const key = `pending/${sessionID}`
         if (await ctx.storage.get(key)) return false
         await ctx.storage.set(key, request)
+        diagnostic("request.queued", { sessionID, directory: ctx.location.directory, kind: "features" in request ? "batch" : "single" })
         return true
       } finally {
         queuing.delete(sessionID)
@@ -55,11 +58,26 @@ export default Plugin.define({
       take: async (input) => {
         const { sessionID } = input as { sessionID: string }
         const key = `pending/${sessionID}`
-        const value = await ctx.storage.get(key)
-        if (!value || typeof value !== "object" || Array.isArray(value)) return { pending: false }
-        await ctx.storage.remove(key)
-        const request = value as Record<string, unknown>
-        return { pending: true, branch: typeof request.branch === "string" ? request.branch : undefined, pr: typeof request.pr === "string" ? request.pr : undefined, features: request.features as FeatureTask[] | undefined }
+        diagnostic("take.started", { sessionID, directory: ctx.location.directory })
+        try {
+          const value = await ctx.storage.get(key)
+          diagnostic("take.read", { sessionID, found: !!value })
+          if (!value || typeof value !== "object" || Array.isArray(value)) return { pending: false }
+          await ctx.storage.remove(key)
+          diagnostic("take.removed", { sessionID })
+          const request = value as Record<string, unknown>
+          const output = {
+            pending: true,
+            ...(typeof request.branch === "string" ? { branch: request.branch } : {}),
+            ...(typeof request.pr === "string" ? { pr: request.pr } : {}),
+            ...(Array.isArray(request.features) ? { features: request.features as FeatureTask[] } : {}),
+          }
+          diagnostic("take.returning", { sessionID, types: Object.fromEntries(Object.entries(output).map(([key, value]) => [key, typeof value])) })
+          return output
+        } catch (error) {
+          diagnostic("take.failed", { sessionID }, error)
+          throw error
+        }
       },
     })
 

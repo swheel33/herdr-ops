@@ -114,7 +114,8 @@ async function scenario(spareTab, existingBranch = false) {
     if (!existingBranch) resource.branch = `feature/e2e-${spareTab ? "multi" : "single"}-${process.pid}`
     // These scenarios verify following the original conversation. Background
     // handoffs are covered separately by the deterministic focus workflow suite.
-    await json("herdr", ["pane", "focus", resource.originPane], resource.repo)
+    await json("herdr", ["workspace", "focus", resource.primaryWorkspace], resource.repo)
+    await json("herdr", ["tab", "focus", resource.originTab], resource.repo)
     await api("session.prompt", resource.sessionID, {
       text: `Implement a small feature on ${existingBranch ? "the existing branch" : "branch"} ${resource.branch}: create FEATURE.txt containing the line "${name}". Before any changes, call herdr_start_feature with branch "${resource.branch}". Once in the new worktree, complete the implementation.`,
       resume: true,

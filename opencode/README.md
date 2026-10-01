@@ -41,6 +41,16 @@ To keep the terminal-derived appearance from a V1 `"theme": "system"` setting, a
 
 ## End-to-end verification
 
+Handoff diagnostics are appended to `$XDG_STATE_HOME/herdr/feature-handoff.jsonl`
+(default `~/.local/state/herdr/feature-handoff.jsonl`) on the host running the
+plugin. Entries include timestamps, process/session IDs, queue consumption,
+RPC response field types, client RPC errors, and move outcomes with created
+resource paths. Request payloads are not logged. Server and TUI load entries confirm
+that each process has loaded the instrumented build; if a process does not
+reload automatically, restart its pane to load TUI changes. Error details may
+contain command arguments, local paths, or response data, so inspect them before
+sharing the log.
+
 From a Herdr-managed pane with the CLI plugin registered and OpenCode v2 available, run:
 
 ```sh

@@ -6,6 +6,7 @@ import { promisify } from "node:util"
 import { Plugin } from "@opencode/plugin/tui"
 import { Feature, type FeatureTask } from "./rpc.js"
 import { syncTabTitles } from "./tab-titles.js"
+import { diagnostic } from "./diagnostics.js"
 
 const execFile = promisify(execFileCallback)
 
@@ -145,6 +146,7 @@ function message(error: unknown): string {
 export default Plugin.define({
   id: "herdr.feature.move",
   setup(ctx) {
+    diagnostic("tui.loaded", { pane: process.env.HERDR_PANE_ID })
     const titles = process.env.HERDR_PANE_ID
       ? syncTabTitles(process.env.HERDR_PANE_ID, (sessionID) => ctx.client.session.get({ sessionID }))
       : undefined
@@ -176,7 +178,9 @@ export default Plugin.define({
       taking = true
       void (async () => {
         const session = await ctx.client.session.get({ sessionID })
+        diagnostic("client.take.started", { sessionID, directory: session.location.directory })
         const request = await feature.take({ sessionID }, { location: session.location }) as { pending: boolean; branch?: string; pr?: string; features?: FeatureTask[] }
+        diagnostic("client.take.received", { sessionID, pending: request.pending, count: request.features?.length })
         if (!request.pending) return
         if (request.features) {
           queuedBatch = { sessionID, features: request.features }
@@ -186,7 +190,10 @@ export default Plugin.define({
         const branch = request.branch || `feature/${slug(session.title ?? "work")}-${Date.now().toString(36)}`
         resumeAfterMove = true
         ctx.keymap.dispatch("herdr.feature", request.pr ? `continue ${request.pr}` : branch)
-      })().catch((error) => ctx.ui.toast.show({ title: "Feature handoff failed", message: message(error), variant: "error" })).finally(() => { taking = false })
+      })().catch((error) => {
+        diagnostic("client.take.failed", { sessionID }, error)
+        ctx.ui.toast.show({ title: "Feature handoff failed", message: message(error), variant: "error" })
+      }).finally(() => { taking = false })
     })
     const slot = ctx.ui.slot({ append: "app", render: () => {
       ctx.keymap.layer(() => ({
@@ -321,7 +328,9 @@ export default Plugin.define({
                   }
                 }
                 ctx.ui.toast.show({ title: "Feature ready", message: `${selected} · ${tree}`, variant: "success" })
+                diagnostic("move.completed", { sessionID, tree, workspace })
               } catch (error) {
+                diagnostic("move.failed", { sessionID, tree, workspace }, error)
                 const detail = `${message(error)}${sessionID ? ` · Session: ${sessionID}` : ""}${tree ? ` · Worktree: ${tree}` : ""}${workspace ? ` · Workspace: ${workspace}` : ""}`
                 results.push(`Failed ${task?.branch ?? task?.pr ?? task?.task ?? input}: ${detail}`)
                 ctx.ui.toast.show({ title: "Feature move stopped", message: detail, variant: "error", duration: 12000 })
