@@ -43,6 +43,9 @@ else if (args[0] === 'worktree' && args[1] === 'create') {
   result = {workspace:{workspace_id:branch},worktree:{path:tree},root_pane:{pane_id:branch}}
 } else if (args[0] === 'worktree' && args[1] === 'list') result = {worktrees:[]}
 else if (args[0] === 'agent' && args[1] === 'list') result = {agents:[{agent_session:{value:'original'}}]}
+else if (args[0] === 'workspace' && args[1] === 'focus') result = {ok:true}
+else if (args[0] === 'tab' && args[1] === 'get') result = {tab:{pane_count:1}}
+else if (args[0] === 'tab' && args[1] === 'list') result = {tabs:[{tab_id:'old-tab'}]}
 else if (args[0] === 'agent' && args[1] === 'start') {
   state.agents[args[2]] = value('--session')
   fs.writeFileSync(process.env.BATCH_STATE, JSON.stringify(state))
@@ -57,8 +60,9 @@ process.env.HERDR_TAB_ID = "old-tab"
 delete process.env.HERDR_PANE_ID
 
 try {
-  for (const failure of [false, true]) {
-    const name = failure ? "partial-failure" : "three-independent-features"
+  for (const name of ["three-independent-features", "partial-failure", "single-feature-branch", "single-feature-generated-branch"]) {
+    const failure = name === "partial-failure"
+    const singleton = name.startsWith("single-feature-")
     const root = path.join(fixture, name)
     await mkdir(root)
     const git = async (...args) => (await execFile("git", args, { cwd: root })).stdout.trim()
@@ -83,6 +87,7 @@ try {
       get: async ({ sessionID }) => sessions.get(sessionID),
       create: async () => { throw new Error("Batch must fork history, not create an empty session") },
       fork: async ({ sessionID }) => {
+        assert.equal(singleton, false, "one task must never fork")
         assert.equal(sessionID, "original")
         const created = { ...structuredClone(sessions.get(sessionID)), id: `session-${sessions.size}` }
         sessions.set(created.id, created)
@@ -92,7 +97,8 @@ try {
       },
       update: async ({ sessionID, title }) => { sessions.get(sessionID).title = title },
       move: async ({ sessionID, directory }) => {
-        assert.notEqual(sessionID, "original", "Batch must never move original session")
+        if (singleton) assert.equal(sessionID, "original", "one task must move the original session")
+        else assert.notEqual(sessionID, "original", "Batch must never move original session")
         sessions.get(sessionID).location.directory = directory
       },
       prompt: async (input) => prompts.push(input),
@@ -114,7 +120,7 @@ try {
         dispatch: (_, input) => { running = command.run(input) },
       },
       ui: {
-        router: { current: () => route, navigate: () => { throw new Error("Batch must preserve origin route") } },
+        router: { current: () => route, navigate: next => { assert.ok(singleton, "Batch must preserve origin route"); route = next } },
         slot: ({ render }) => { render(); return () => {} },
         toast: { show: input => toasts.push(input) },
       },
@@ -133,13 +139,13 @@ try {
         await call(invalid)
         assert.equal(storage.size, 0, "invalid batch must not queue")
       }
-      const features = [
+      const features = singleton ? [{ task: "Do not append this rewritten assignment.", ...(name === "single-feature-branch" ? { branch: "feature/single" } : {}) }] : [
         { branch: "feature/assets", task: "Fix missing assets. Verify locally and open a PR." },
         { branch: failure ? "feature/fail-text" : "feature/text", task: "Harden ChangeText. Reproduce locally, then open a PR." },
         { task: "Improve SDK diagnostics. Verify severity cleanup and open a PR." },
       ]
       const queued = await Promise.all([call({ features }), call({ features })])
-      assert.equal(queued.filter(result => /3 feature sessions queued/.test(result.content)).length, 1)
+      assert.equal(queued.filter(result => (singleton ? /move this same session/ : /3 feature sessions queued/).test(result.content)).length, 1)
       assert.equal(queued.filter(result => /already queued/.test(result.content)).length, 1)
       assert.match((await call({ branch: "feature/unwanted" })).content, /already queued/)
       const event = events.get("session.execution.succeeded")
@@ -149,6 +155,24 @@ try {
       while (!running && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
       assert.ok(running, "handoff dispatched")
       await running
+      if (singleton) {
+        assert.ok(toasts.some(toast => toast.title === "Feature ready"), JSON.stringify(toasts))
+        assert.equal(sessions.size, 1)
+        const original = sessions.get("original")
+        assert.notEqual(original.location.directory, root)
+        assert.deepEqual(original.history, history)
+        assert.deepEqual(prompts, [{ sessionID: "original", text: "The requested feature worktree is ready. Continue implementing the original user request in this worktree now.", resume: true }])
+        assert.deepEqual(summaries, [])
+        assert.equal(storage.size, 0)
+        const branch = (await execFile("git", ["branch", "--show-current"], { cwd: original.location.directory })).stdout.trim()
+        if (features[0].branch) assert.equal(branch, features[0].branch)
+        const commands = (await readFile(process.env.BATCH_COMMANDS, "utf8")).trim().split("\n").map(JSON.parse)
+        assert.equal(commands.filter(args => args[0] === "agent" && args[1] === "start").length, 1)
+        assert.ok(commands.filter(args => args[0] === "agent" && args[1] === "start").every(args => args.slice(args.indexOf("--") + 1).includes("--auto")), "moved session launches with auto approval")
+        receipt.scenarios.push({ name, status: "passed", sessions: [...sessions.values()], prompts, summaries, commands, toasts })
+        await git("worktree", "remove", original.location.directory)
+        continue
+      }
       const expected = failure ? 2 : 3
       assert.equal(sessions.size, expected + 1)
       assert.equal(prompts.length, expected)
@@ -170,6 +194,7 @@ try {
       }
       const commands = (await readFile(process.env.BATCH_COMMANDS, "utf8")).trim().split("\n").map(JSON.parse)
       assert.equal(commands.filter(args => args[0] === "agent" && args[1] === "start").length, expected)
+      assert.ok(commands.filter(args => args[0] === "agent" && args[1] === "start").every(args => args.slice(args.indexOf("--") + 1).includes("--auto")), "every fork launches with auto approval")
       assert.ok(!commands.some(args => args[0] === "workspace" && args[1] === "focus" || args[0] === "tab" && args[1] === "close"), "batch never steals focus or closes tabs")
       receipt.scenarios.push({ name, status: "passed", sessions: [...sessions.values()], prompts, summaries, commands, toasts })
       for (const value of [...sessions.values()].slice(1)) await git("worktree", "remove", value.location.directory)

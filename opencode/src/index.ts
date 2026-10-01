@@ -84,7 +84,7 @@ export default Plugin.define({
     await ctx.tool.transform((editor) => {
       editor.add({
         name: "herdr_start_feature",
-        description: "Request Herdr worktrees before editing. For multiple independent features, pass features with one assignment per branch; each forks the full conversation history and moves that fork into its worktree. The original conversation stays here. For a single-session move, pass pr for an existing open same-repository PR, branch for an existing or new branch, or neither. Do not call inside a worktree. Queue all features in one call, then end the turn.",
+        description: "Request Herdr worktrees before editing. For one task, move this same session: pass pr for an existing open same-repository PR, branch for an existing or new branch, or neither. Do not rewrite the assignment. A one-item features array also moves this same session and does not append its task text. Only for multiple independent features, pass features with one assignment per branch; each forks the full conversation history and moves that fork into its worktree. The original conversation stays here for multiple features. Do not call inside a worktree. Queue all features in one call, then end the turn.",
         input: {
           type: "object",
           properties: {
@@ -119,11 +119,15 @@ export default Plugin.define({
               if (target && targets.has(target)) return { content: "Each feature must target a different branch/PR. No worktrees were created." }
               if (target) targets.add(target)
             }
-            if (!await queue(call.sessionID, { features })) return { content: "Feature handoff is already queued. Finish this turn without editing." }
-            return { content: `${features.length} feature sessions queued. Finish this turn without editing or running implementation commands. Herdr will fork this conversation with its full history for each task and move each fork into its own worktree; this conversation stays in the primary checkout.` }
+            if (features.length > 1) {
+              if (!await queue(call.sessionID, { features })) return { content: "Feature handoff is already queued. Finish this turn without editing." }
+              return { content: `${features.length} feature sessions queued. Finish this turn without editing or running implementation commands. Herdr will fork this conversation with its full history for each task and move each fork into its own worktree; this conversation stays in the primary checkout.` }
+            }
           }
-          const branch = (input as { branch?: string }).branch?.trim()
-          const pr = (input as { pr?: string }).pr?.trim()
+          // One task is a relocation, even if the caller used the array form.
+          // Keep its target, but leave the original conversation as the assignment.
+          const branch = features?.[0]?.branch ?? (input as { branch?: string }).branch?.trim()
+          const pr = features?.[0]?.pr ?? (input as { pr?: string }).pr?.trim()
           if (pr && branch) return { content: "Specify either pr or branch, not both. No worktree was created." }
           if ("pr" in (input as object) && !pr) return { content: "A pull request reference cannot be empty. No worktree was created." }
           if (branch) await execFile("git", ["check-ref-format", "--branch", branch], { cwd: session.location.directory })
@@ -136,7 +140,7 @@ export default Plugin.define({
     await ctx.session.hook("context", async (event) => {
       const session = await ctx.session.get({ sessionID: event.sessionID })
       if (session.parentID || !await eligible(session.location.directory, event.sessionID)) return
-      event.system.push({ type: "text", text: "Herdr feature workflow: in this primary checkout, before implementing a feature or fix, call herdr_start_feature and end the turn without editing. When the user requests multiple independent fixes/features, pass all of them in one features array, one assignment per separate branch/session. Each session inherits the full conversation history through a fork, which is moved into its own worktree. Specify which feature each fork should implement, including local verification requirements and any requested commit/push/PR instructions. The original conversation stays here for batch starts. If the user refers to an existing PR by number or URL, pass pr with that reference; if they name an existing branch but not a PR, pass branch with its exact name. Do not guess a PR or branch from vague context; ask if ambiguous. With neither, a new feature branch is created. For a single feature without features, the same session moves; after it resumes in the worktree, implement normally. Read-only investigation and answering questions do not require a worktree. Do not call this tool for explicitly requested in-place edits. Committing and pushing are separate actions, not done by the handoff." })
+      event.system.push({ type: "text", text: "Herdr feature workflow: in this primary checkout, before implementing a feature or fix, call herdr_start_feature and end the turn without editing. For one task, use branch, pr, or neither: move this same session without rewriting the assignment. A one-item features array also moves this same session; its task text is not appended. Only when the user requests multiple independent fixes/features, pass all of them in one features array, one assignment per separate branch/session. Each session inherits the full conversation history through a fork, which is moved into its own worktree. Specify which feature each fork should implement, including local verification requirements and any requested commit/push/PR instructions. The original conversation stays here for multiple features. If the user refers to an existing PR by number or URL, pass pr with that reference; if they name an existing branch but not a PR, pass branch with its exact name. Do not guess a PR or branch from vague context; ask if ambiguous. With neither, a new feature branch is created. After the session resumes in its worktree, implement normally. Read-only investigation and answering questions do not require a worktree. Do not call this tool for explicitly requested in-place edits. Committing and pushing are separate actions, not done by the handoff." })
     })
     return stopMaintenance
   },

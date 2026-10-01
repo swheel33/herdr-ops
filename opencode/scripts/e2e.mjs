@@ -48,8 +48,8 @@ function record(check, actual) {
   assert.ok(actual, check)
 }
 
-async function scenario(spareTab, existingBranch = false) {
-  const name = existingBranch ? "existing-remote-branch" : spareTab ? "multiple-primary-tabs" : "last-primary-tab"
+async function scenario(spareTab, existingBranch = false, singleton = false) {
+  const name = singleton ? "single-feature-array" : existingBranch ? "existing-remote-branch" : spareTab ? "multiple-primary-tabs" : "last-primary-tab"
   const result = { name, resource: {}, observations: {}, status: "running" }
   receipt.scenarios.push(result)
   const resource = result.resource
@@ -97,6 +97,9 @@ async function scenario(spareTab, existingBranch = false) {
       return messages.some((message) => message.id === resource.messageID) && messages.some((message) => message.type === "idle" && message.outcome === "succeeded")
     })
     record(`${name}: marker message is saved before move`, true)
+    const loaded = JSON.parse(await command("opencode", ["api", "get", "/api/plugin", "--header", `x-opencode-directory:${encodeURIComponent(resource.repo)}`])).data
+    result.observations.featurePlugins = loaded.filter(plugin => plugin.id === "herdr.feature.agent")
+    record(`${name}: tested server build is active`, result.observations.featurePlugins.length === 1 && result.observations.featurePlugins[0].state.status === "active" && result.observations.featurePlugins[0].source.path === path.join(pluginDirectory, "index.js"))
 
     const started = await json("herdr", ["agent", "start", `e2e-${spareTab ? "multi" : "single"}-${process.pid}`.slice(0, 32), "--kind", "opencode", "--pane", resource.originPane, "--timeout", "60000", "--", "--session", resource.sessionID], resource.repo)
     record(`${name}: primary pane has the session`, started.agent?.agent_session?.value === resource.sessionID)
@@ -111,13 +114,12 @@ async function scenario(spareTab, existingBranch = false) {
       return
     }
 
-    if (!existingBranch) resource.branch = `feature/e2e-${spareTab ? "multi" : "single"}-${process.pid}`
-    // These scenarios verify following the original conversation. Background
-    // handoffs are covered separately by the deterministic focus workflow suite.
-    await json("herdr", ["workspace", "focus", resource.primaryWorkspace], resource.repo)
-    await json("herdr", ["tab", "focus", resource.originTab], resource.repo)
+    if (!existingBranch) resource.branch = `feature/e2e-${singleton ? "singleton" : spareTab ? "multi" : "single"}-${process.pid}`
+    // Keep the live run in the background. Focus/navigation races are covered
+    // by focus-e2e without competing with the user's workspace selection.
+    const singletonTask = "SINGLETON-TASK-MUST-NOT-BE-APPENDED: create FEATURE.txt as requested in the original conversation."
     await api("session.prompt", resource.sessionID, {
-      text: `Implement a small feature on ${existingBranch ? "the existing branch" : "branch"} ${resource.branch}: create FEATURE.txt containing the line "${name}". Before any changes, call herdr_start_feature with branch "${resource.branch}". Once in the new worktree, complete the implementation.`,
+      text: `Implement a small feature on ${existingBranch ? "the existing branch" : "branch"} ${resource.branch}: create FEATURE.txt containing the line "${name}". Before any changes, call herdr_start_feature ${singleton ? `with exactly this input (exercise a one-item array): ${JSON.stringify({ features: [{ branch: resource.branch, task: singletonTask }] })}` : `with branch "${resource.branch}"`}. Once in the new worktree, complete the implementation.`,
       resume: true,
     }, resource.repo)
 
@@ -142,11 +144,24 @@ async function scenario(spareTab, existingBranch = false) {
     }, 90_000)
     resource.featurePane = pane.pane_id
     result.observations.newAgent = pane
+    const processInfo = await json("herdr", ["pane", "process-info", "--pane", resource.featurePane], resource.repo)
+    result.observations.featureProcesses = processInfo.process_info.foreground_processes
+    record(`${name}: new pane launches with --auto and same session`, result.observations.featureProcesses.some(process => process.argv?.includes("--auto") && process.argv?.includes(resource.sessionID)))
     const moved = await api("session.get", resource.sessionID, undefined, resource.repo)
     record(`${name}: original session moved into worktree`, moved.location.directory === resource.featurePath)
     const messages = await api("session.message.list", resource.sessionID, undefined, resource.repo)
     record(`${name}: planning message survived session move`, messages.some((message) => message.id === resource.messageID && message.text?.includes(marker)))
     record(`${name}: agent requested handoff with tool`, messages.some((message) => JSON.stringify(message).includes("herdr_start_feature")))
+    if (singleton) {
+      const calls = messages.flatMap(message => (message.content ?? []).flatMap(part => [
+        ...(part.type === "tool" && part.name === "herdr_start_feature" ? [{ tool: part.name, input: part.state?.input }] : []),
+        ...(part.state?.metadata?.toolCalls ?? []),
+      ]))
+      record(`${name}: one-item array actually requested`, calls.some(call => call.tool === "herdr_start_feature" && call.input?.features?.length === 1))
+      const userMessages = messages.filter(message => message.type === "user")
+      record(`${name}: no rewritten assignment appended`, userMessages.filter(message => message.text?.includes(singletonTask)).length === 1)
+      record(`${name}: no batch instructions or summary`, !messages.some(message => (message.type === "user" || message.type === "synthetic") && /full-history fork|Herdr feature batch results/.test(message.text ?? "")))
+    }
     await until(`${name}: agent implemented in worktree`, async () => {
       try { return (await readFile(path.join(resource.featurePath, "FEATURE.txt"), "utf8")).trim() === name }
       catch { return false }
@@ -174,11 +189,6 @@ async function scenario(spareTab, existingBranch = false) {
       })
       record(`${name}: final primary tab is blank OpenCode home`, Boolean(home))
     }
-    const focused = await until(`${name}: feature workspace focused`, async () => {
-      const current = await json("herdr", ["workspace", "get", resource.featureWorkspace])
-      return current.workspace?.focused
-    })
-    record(`${name}: feature workspace focused`, focused)
     result.status = "passed"
   } catch (error) {
     result.status = "failed"
@@ -236,7 +246,6 @@ async function scenario(spareTab, existingBranch = false) {
 }
 
 await mkdir(receiptDirectory, { recursive: true })
-let originalWorkspace
 let error
 try {
   assert.equal(process.env.HERDR_ENV, "1", "Run the E2E suite from a Herdr-managed pane")
@@ -247,21 +256,16 @@ try {
   receipt.cliPlugin = cliPlugin
   receipt.opencode = await command("opencode", ["--version"])
   receipt.herdr = await command("herdr", ["--version"])
-  const workspaces = await json("herdr", ["workspace", "list"])
-  originalWorkspace = workspaces.workspaces.find((workspace) => workspace.focused)?.workspace_id
   await scenario(false)
   await scenario(true)
   await scenario(false, true)
+  await scenario(false, false, true)
   receipt.status = "passed"
 } catch (cause) {
   error = cause
   receipt.status = "failed"
   receipt.error = cause instanceof Error ? cause.message : String(cause)
 } finally {
-  if (originalWorkspace) {
-    try { await json("herdr", ["workspace", "focus", originalWorkspace]) }
-    catch (cause) { receipt.cleanup.push({ focusError: String(cause) }) }
-  }
   if (receipt.cleanup.some((entry) => Object.keys(entry).some((key) => key.endsWith("Error")))) {
     receipt.status = "failed"
     error ??= new Error("E2E cleanup failed; inspect the JSON receipt before removing retained resources")

@@ -4,6 +4,14 @@ This OpenCode v2 plugin lets an agent request a Herdr feature worktree before im
 
 For multiple independent features, it **forks the full conversation history once per feature and moves each fork into its own worktree**, keeping the original conversation in the primary checkout. Each fork receives its specific assignment and runs independently with the inherited context.
 
+A single task always moves the **original session**, including when the tool is
+called with a one-item `features` array. Its branch/PR target is preserved, but
+its task text is not appended as a new assignment. The existing conversation
+remains authoritative; only the normal worktree-ready continuation is sent.
+
+New feature panes launch OpenCode with `--auto --session <id>` for both moves
+and batch forks. Auto mode approves permissions that are not explicitly denied.
+
 ## Install
 
 Install OpenCode v2 and Herdr's OpenCode integration on the host that owns the checkout. The `opencode` command visible to Herdr panes must resolve to v2. From this directory:
@@ -63,6 +71,13 @@ The runner builds the plugin and exercises agent-requested handoffs in disposabl
 
 Run `npm run test:metadata-e2e` for a deterministic end-to-end check of the PR sidebar reporter and tab-title CLI commands against disposable fake Herdr, Git, and GitHub executables. It prints a repeatable JSON receipt under `/tmp/opencode/herdr-metadata-e2e/` with the reported tokens and tab renames. It does not change live workspaces.
 
+The interactive runner also exercises a one-item `features` array and verifies
+the original session moves, its planning message survives, and no rewritten
+assignment or batch summary is appended. It runs in background workspaces;
+focus behavior is verified separately by `test:focus-e2e`. The batch workflow
+suite covers single-item requests with explicit and generated branches alongside
+real batches.
+
 Run `npm run test:focus-e2e` for a deterministic workflow check using real disposable Git worktrees, a fake Herdr executable, and a CLI-context harness. It verifies following the original pane, preserving focus after switching Herdr panes during setup, and leaving another OpenCode conversation and its tab untouched. It does not change live workspaces and prints a JSON receipt with commands and navigation under `/tmp/opencode/herdr-focus-e2e/`.
 
 Run `npm run test:batch-e2e` for a deterministic workflow check spanning the server tool, RPC handoff, CLI plugin, and real disposable Git worktrees. Herdr and the OpenCode session host are fixtures. It verifies three independent branches with full-history session forks, moves of the forks rather than the original, exact task delivery, an untouched primary checkout, validation, duplicate-event handling, and continued startup after one feature fails. Its repeatable JSON receipt under `/tmp/opencode/herdr-batch-e2e/` records sessions, prompts, results, and CLI commands.
@@ -73,6 +88,11 @@ Run `npm run test:pruning-e2e` to exercise the cleanup loop against disposable f
 
 To exercise a running named Herdr session instead of the current one, set `HERDR_E2E_SESSION=<name>`. The server-side plugin discovers the conversation across running local Herdr sessions; the TUI uses its pane's inherited socket. When testing a worktree checkout before installing its TUI plugin, set `HERDR_E2E_CLI_PLUGIN` to the installed copy's absolute path (the TUI code must be compatible). Set `HERDR_E2E_ELIGIBILITY_ONLY=1` to verify discovery against real Herdr agents without attempting the handoff; this is useful before the server and TUI plugins are installed from the same checkout. The JSON receipt records these selections.
 
+The global server plugin registration must point to the checkout being tested.
+Loading another copy from the disposable repository does not replace the global
+copy: OpenCode rejects duplicate plugin IDs. The runner checks the active server
+plugin's source path before attempting a handoff and records it in the receipt.
+
 ## Use
 
 Ask for a feature or fix in a Herdr-hosted root OpenCode v2 conversation in the primary checkout. The plugin instructs the agent to call `herdr_start_feature` before implementation; once its turn finishes, the TUI moves the session into the worktree and prompts it to continue. Mention an existing PR number or URL to continue its head branch, or an exact branch name to continue that branch; the agent passes `pr` or `branch` to the tool respectively. Ambiguous references should be clarified rather than guessed. The primary checkout must be clean. A new branch starts at a freshly fetched `origin` default commit, or local `HEAD` when there is no origin. An existing branch starts at its tip (fetching its origin head when available), with divergence rejected. Ignored `.env` files are symlinked from the primary checkout, and `pnpm install --frozen-lockfile` runs when there is a `pnpm-lock.yaml`. Read-only questions and explicit in-place edits do not trigger this workflow. The handoff does not commit or push changes; push the resulting commit to the same branch to update the PR.
@@ -80,6 +100,9 @@ Ask for a feature or fix in a Herdr-hosted root OpenCode v2 conversation in the 
 `/feature` remains available as a manual fallback, with an optional existing or new branch argument, while the automatic handoff is being adopted. It is not required for ordinary feature work.
 
 ### Multiple features from one request
+
+Forking applies only to arrays with two or more tasks. For a single task, prefer
+top-level `branch`, `pr`, or neither; a one-item array has the same move behavior.
 
 Ask, for example: “Fix the asset caching, ChangeText, and SDK diagnostics issues in three separate branches. Reproduce each locally and open one PR per fix.” The agent queues a single batch:
 
