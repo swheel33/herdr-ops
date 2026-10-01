@@ -95,6 +95,7 @@ try {
     assert(toasts.some((toast) => toast.title === "Feature ready"), JSON.stringify(toasts))
     const commands = (await readFile(process.env.FOCUS_COMMANDS, "utf8")).trim().split("\n").map(JSON.parse)
     assert.equal(directory, tree, "same session moved even when focus changes")
+    assert.ok(commands.some(args => args[0] === "agent" && args[1] === "start" && args.slice(args.indexOf("--") + 1).includes("--auto")), "moved session launches with auto approval")
     const follows = focused && !switchRoute
     assert.equal(commands.some((args) => args[0] === "workspace" && args[1] === "focus"), follows)
     assert.equal(navigation.length, switchRoute ? 0 : 1)

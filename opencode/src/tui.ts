@@ -298,7 +298,7 @@ export default Plugin.define({
                 }
                 if (!arrived) throw new Error("The session move has not completed; inspect the session before retrying")
                 const name = `f-${slug(selected).slice(0, 15)}-${Date.now().toString(36)}`.slice(0, 32)
-                await herdr(root, "agent", "start", name, "--kind", "opencode", "--pane", pane, "--timeout", "60000", "--", "--session", sessionID)
+                await herdr(root, "agent", "start", name, "--kind", "opencode", "--pane", pane, "--timeout", "60000", "--", "--auto", "--session", sessionID)
                 const agent = (await herdr(root, "agent", "get", name)).agent
                 if (agent?.agent_session?.value !== sessionID) throw new Error("New pane has not reported the feature session; inspect it before retrying")
                 if (task) {
